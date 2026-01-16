@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@netlify/node",
+      "config": { "nodeVersion": "16" }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/server.js"
+    },
+    {
+      "src": ".*",
+      "dest": "/index.html"
+    }
+  ],
+  "functions": {
+    "api/*": {
+      "handler": "server.js"
+    }
+  }
+}

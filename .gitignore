@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug logs
+npm-debug.log
+yarn-error.log
+*.log
+server.pid
+
+# Deployment
+.netlify/
+.vercel/
+dist/
+build/
+
+# Test artifacts
+test-screenshots/
+test-screenshots-backup/
+
+# Backup files (use git instead)
+*.backup
+*.backup-*
+*.bak
+*.temp
+*.tmp
