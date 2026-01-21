@@ -364,6 +364,75 @@
             border-radius: 12px;
             border: 1px solid var(--border-warm);
             overflow: hidden;
+            position: relative;
+        }
+
+        /* Reading Progress Indicator */
+        .reading-progress-container {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: var(--bg-warm-white);
+            border-bottom: 1px solid var(--border-warm);
+            padding: 0.5rem 1rem;
+            display: none; /* Hidden until chapter is loaded */
+        }
+
+        .reading-progress-container.visible {
+            display: block;
+        }
+
+        .reading-progress-bar {
+            height: 4px;
+            background: linear-gradient(90deg, var(--accent-gold) 0%, var(--accent-terracotta) 100%);
+            border-radius: 2px;
+            width: 0%;
+            transition: width 0.1s ease-out;
+            margin-bottom: 0.4rem;
+        }
+
+        .reading-progress-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        #readingProgressPercent {
+            font-weight: 600;
+            color: var(--accent-terracotta);
+        }
+
+        .font-size-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            margin-left: auto;
+        }
+
+        .font-size-btn {
+            padding: 0.2rem 0.5rem;
+            background: var(--bg-cream);
+            border: 1px solid var(--border-warm);
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            cursor: pointer;
+            color: var(--text-dark);
+            transition: all 0.2s;
+        }
+
+        .font-size-btn:hover {
+            background: var(--accent-gold);
+            color: white;
+            border-color: var(--accent-gold);
+        }
+
+        .font-size-display {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            min-width: 35px;
+            text-align: center;
         }
 
         .chapter-header {
@@ -504,7 +573,6 @@
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            margin-left: auto;
         }
 
         .tts-speed-label {
@@ -520,6 +588,118 @@
             color: #667eea;
             font-size: 0.85rem;
             cursor: pointer;
+        }
+
+        .tts-volume-control {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            margin-left: auto;
+            padding-left: 0.5rem;
+            border-left: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .tts-btn-icon {
+            padding: 0.4rem 0.5rem;
+            min-width: unset;
+        }
+
+        .tts-volume-slider {
+            width: 80px;
+            height: 4px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 2px;
+            cursor: pointer;
+        }
+
+        .tts-volume-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 14px;
+            height: 14px;
+            background: white;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .tts-volume-slider::-moz-range-thumb {
+            width: 14px;
+            height: 14px;
+            background: white;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+
+        .tts-volume-display {
+            color: white;
+            font-size: 0.75rem;
+            min-width: 35px;
+            text-align: right;
+        }
+
+        .tts-help-btn {
+            margin-left: 0.5rem;
+            opacity: 0.7;
+        }
+
+        .tts-help-btn:hover {
+            opacity: 1;
+        }
+
+        /* Keyboard shortcuts modal */
+        .keyboard-shortcuts-modal {
+            max-width: 500px;
+        }
+
+        .keyboard-shortcuts-modal h2 {
+            margin-bottom: 1.5rem;
+            color: var(--text-dark);
+        }
+
+        .shortcuts-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        .shortcut-section h3 {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .shortcut-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0;
+            font-size: 0.9rem;
+        }
+
+        .shortcut-item kbd {
+            background: var(--bg-cream);
+            border: 1px solid var(--border-warm);
+            border-radius: 4px;
+            padding: 0.2rem 0.5rem;
+            font-family: monospace;
+            font-size: 0.8rem;
+            min-width: 24px;
+            text-align: center;
+        }
+
+        .shortcut-item span {
+            color: var(--text-muted);
+        }
+
+        @media (max-width: 500px) {
+            .shortcuts-grid {
+                grid-template-columns: 1fr;
+            }
         }
 
         .tts-progress {
@@ -1249,6 +1429,16 @@
                             <span>+1</span>
                         </button>
                     </div>
+                    <div class="tts-volume-control">
+                        <button class="tts-btn tts-btn-icon" id="ttsMuteBtn" onclick="ttsManager.toggleMute()" title="Mute/Unmute (M)">
+                            <span>🔊</span>
+                        </button>
+                        <input type="range" class="tts-volume-slider" id="ttsVolumeSlider" 
+                               min="0" max="100" value="100" 
+                               oninput="ttsManager.setVolume(this.value / 100)"
+                               title="Volume (↑/↓)">
+                        <span class="tts-volume-display" id="ttsVolumeDisplay">100%</span>
+                    </div>
                     <div class="tts-speed-control">
                         <span class="tts-speed-label">Speed:</span>
                         <select class="tts-speed-select" id="ttsSpeed" onchange="ttsManager.setSpeed(this.value)">
@@ -1259,12 +1449,29 @@
                             <option value="2.0">2.0x</option>
                         </select>
                     </div>
+                    <button class="tts-btn tts-btn-icon tts-help-btn" onclick="showKeyboardShortcutsHelp()" title="Keyboard shortcuts (?)">
+                        <span>⌨</span>
+                    </button>
                 </div>
                 <div class="tts-progress" id="ttsProgress">
                     <div class="tts-progress-bar">
                         <div class="tts-progress-fill" id="ttsProgressFill"></div>
                     </div>
                     <div class="tts-progress-text" id="ttsProgressText">Initializing...</div>
+                </div>
+            </div>
+
+            <!-- Reading Progress Indicator -->
+            <div class="reading-progress-container" id="readingProgressContainer">
+                <div class="reading-progress-bar" id="readingProgressBar"></div>
+                <div class="reading-progress-info">
+                    <span id="readingProgressPercent">0%</span>
+                    <span id="readingProgressChapter"></span>
+                    <div class="font-size-controls">
+                        <button class="font-size-btn" onclick="decreaseFontSize()" title="Decrease font size (-)">A-</button>
+                        <span class="font-size-display" id="fontSizeDisplay">100%</span>
+                        <button class="font-size-btn" onclick="increaseFontSize()" title="Increase font size (+)">A+</button>
+                    </div>
                 </div>
             </div>
 

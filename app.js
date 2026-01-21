@@ -66,6 +66,195 @@ function setupEventListeners() {
             if (e.key === 'Enter') searchNovels();
         });
     }
+    
+    // Global keyboard shortcuts
+    setupKeyboardShortcuts();
+}
+
+// Keyboard shortcuts for TTS and navigation
+function setupKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        // Don't trigger shortcuts when typing in input fields
+        const activeElement = document.activeElement;
+        const isTyping = activeElement.tagName === 'INPUT' || 
+                         activeElement.tagName === 'TEXTAREA' ||
+                         activeElement.isContentEditable;
+        
+        if (isTyping) return;
+        
+        // Don't trigger if modifier keys are held (except for specific combos)
+        const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
+        
+        switch (e.key) {
+            // TTS Controls
+            case ' ':  // Space - Play/Pause TTS
+                e.preventDefault();
+                if (ttsManager.isPlaying) {
+                    ttsManager.pause();
+                } else {
+                    ttsManager.play();
+                }
+                break;
+                
+            case 'k':  // K - Also play/pause (YouTube-style)
+            case 'K':
+                if (!hasModifier) {
+                    e.preventDefault();
+                    if (ttsManager.isPlaying) {
+                        ttsManager.pause();
+                    } else {
+                        ttsManager.play();
+                    }
+                }
+                break;
+                
+            case 's':  // S - Stop TTS
+            case 'S':
+                if (!hasModifier) {
+                    e.preventDefault();
+                    ttsManager.stop();
+                }
+                break;
+                
+            case ',':  // Comma - Skip backward
+            case '<':
+                if (!hasModifier) {
+                    e.preventDefault();
+                    ttsManager.skipBackward();
+                }
+                break;
+                
+            case '.':  // Period - Skip forward
+            case '>':
+                if (!hasModifier) {
+                    e.preventDefault();
+                    ttsManager.skipForward();
+                }
+                break;
+                
+            // Chapter Navigation
+            case 'j':  // J - Previous chapter
+            case 'J':
+                if (!hasModifier) {
+                    e.preventDefault();
+                    navigateChapter(-1);
+                }
+                break;
+                
+            case 'l':  // L - Next chapter
+            case 'L':
+                if (!hasModifier) {
+                    e.preventDefault();
+                    navigateChapter(1);
+                }
+                break;
+                
+            case 'ArrowLeft':  // Left arrow - Previous chapter
+                if (!hasModifier) {
+                    e.preventDefault();
+                    navigateChapter(-1);
+                }
+                break;
+                
+            case 'ArrowRight':  // Right arrow - Next chapter
+                if (!hasModifier) {
+                    e.preventDefault();
+                    navigateChapter(1);
+                }
+                break;
+                
+            // Volume controls
+            case 'ArrowUp':  // Up arrow - Volume up
+                if (!hasModifier && ttsManager.audioContext) {
+                    e.preventDefault();
+                    const currentVol = ttsManager.gainNode?.gain.value || 1.0;
+                    ttsManager.setVolume(Math.min(1.0, currentVol + 0.1));
+                }
+                break;
+                
+            case 'ArrowDown':  // Down arrow - Volume down
+                if (!hasModifier && ttsManager.audioContext) {
+                    e.preventDefault();
+                    const currentVol = ttsManager.gainNode?.gain.value || 1.0;
+                    ttsManager.setVolume(Math.max(0, currentVol - 0.1));
+                }
+                break;
+                
+            case 'm':  // M - Mute/unmute
+            case 'M':
+                if (!hasModifier) {
+                    e.preventDefault();
+                    ttsManager.toggleMute();
+                }
+                break;
+                
+            // UI Controls
+            case 'Escape':  // Escape - Close modals
+                closeAuthModal();
+                closeLibraryPanel();
+                closeUserDropdown();
+                break;
+                
+            case '/':  // Forward slash - Focus search
+                if (!hasModifier) {
+                    e.preventDefault();
+                    const searchInput = document.getElementById('searchInput');
+                    if (searchInput) searchInput.focus();
+                }
+                break;
+                
+            case '?':  // Question mark - Show keyboard shortcuts help
+                if (!hasModifier) {
+                    e.preventDefault();
+                    showKeyboardShortcutsHelp();
+                }
+                break;
+        }
+    });
+}
+
+// Show keyboard shortcuts help modal
+function showKeyboardShortcutsHelp() {
+    // Check if modal already exists
+    let modal = document.getElementById('keyboardShortcutsModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'keyboardShortcutsModal';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+            <div class="modal keyboard-shortcuts-modal">
+                <button class="modal-close" onclick="closeKeyboardShortcutsHelp()">&times;</button>
+                <h2>Keyboard Shortcuts</h2>
+                <div class="shortcuts-grid">
+                    <div class="shortcut-section">
+                        <h3>TTS Playback</h3>
+                        <div class="shortcut-item"><kbd>Space</kbd> or <kbd>K</kbd> <span>Play / Pause</span></div>
+                        <div class="shortcut-item"><kbd>S</kbd> <span>Stop</span></div>
+                        <div class="shortcut-item"><kbd>,</kbd> <span>Skip backward</span></div>
+                        <div class="shortcut-item"><kbd>.</kbd> <span>Skip forward</span></div>
+                        <div class="shortcut-item"><kbd>↑</kbd> / <kbd>↓</kbd> <span>Volume up / down</span></div>
+                        <div class="shortcut-item"><kbd>M</kbd> <span>Mute / Unmute</span></div>
+                    </div>
+                    <div class="shortcut-section">
+                        <h3>Navigation & Reading</h3>
+                        <div class="shortcut-item"><kbd>J</kbd> or <kbd>←</kbd> <span>Previous chapter</span></div>
+                        <div class="shortcut-item"><kbd>L</kbd> or <kbd>→</kbd> <span>Next chapter</span></div>
+                        <div class="shortcut-item"><kbd>+</kbd> / <kbd>-</kbd> <span>Font size</span></div>
+                        <div class="shortcut-item"><kbd>/</kbd> <span>Focus search</span></div>
+                        <div class="shortcut-item"><kbd>Esc</kbd> <span>Close modals</span></div>
+                        <div class="shortcut-item"><kbd>?</kbd> <span>Show this help</span></div>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    modal.classList.add('active');
+}
+
+function closeKeyboardShortcutsHelp() {
+    const modal = document.getElementById('keyboardShortcutsModal');
+    if (modal) modal.classList.remove('active');
 }
 
 // TTS Manager implementation with Web Audio API for gapless playback
@@ -968,6 +1157,72 @@ const ttsManager = {
         console.log('[TTS] Speed changed to', this.speed + 'x');
     },
 
+    // Volume control
+    volume: 1.0,
+    isMuted: false,
+    volumeBeforeMute: 1.0,
+
+    setVolume(volume) {
+        this.volume = Math.max(0, Math.min(1, volume));
+        
+        if (this.gainNode) {
+            this.gainNode.gain.value = this.isMuted ? 0 : this.volume;
+        }
+        
+        // Update volume slider UI if it exists
+        const volumeSlider = document.getElementById('ttsVolumeSlider');
+        if (volumeSlider) {
+            volumeSlider.value = this.volume * 100;
+        }
+        
+        // Update volume display
+        const volumeDisplay = document.getElementById('ttsVolumeDisplay');
+        if (volumeDisplay) {
+            volumeDisplay.textContent = Math.round(this.volume * 100) + '%';
+        }
+        
+        // Update mute button icon
+        this.updateVolumeIcon();
+        
+        console.log('[TTS] Volume changed to', Math.round(this.volume * 100) + '%');
+    },
+
+    toggleMute() {
+        if (this.isMuted) {
+            // Unmute - restore previous volume
+            this.isMuted = false;
+            if (this.gainNode) {
+                this.gainNode.gain.value = this.volume;
+            }
+        } else {
+            // Mute - save current volume and set to 0
+            this.isMuted = true;
+            this.volumeBeforeMute = this.volume;
+            if (this.gainNode) {
+                this.gainNode.gain.value = 0;
+            }
+        }
+        
+        this.updateVolumeIcon();
+        console.log('[TTS] Mute toggled:', this.isMuted ? 'muted' : 'unmuted');
+    },
+
+    updateVolumeIcon() {
+        const muteBtn = document.getElementById('ttsMuteBtn');
+        if (muteBtn) {
+            const icon = muteBtn.querySelector('span:first-child');
+            if (icon) {
+                if (this.isMuted || this.volume === 0) {
+                    icon.textContent = '🔇';
+                } else if (this.volume < 0.5) {
+                    icon.textContent = '🔉';
+                } else {
+                    icon.textContent = '🔊';
+                }
+            }
+        }
+    },
+
     // Skip forward by specified number of segments (default: 1)
     skipForward(count = 1) {
         if (!this.isStreaming || this.segments.length === 0) {
@@ -1625,7 +1880,43 @@ function displayChapter(content, chapter) {
         <h2 style="text-align: center; margin-bottom: 2rem;">Chapter ${chapter.number}: ${safeTitle}</h2>
         ${content}
     `;
-    document.querySelector('.chapter-content-panel').scrollTop = 0;
+    
+    const contentPanel = document.querySelector('.chapter-content-panel');
+    
+    // Show and update reading progress indicator
+    const progressContainer = document.getElementById('readingProgressContainer');
+    const chapterInfo = document.getElementById('readingProgressChapter');
+    
+    if (progressContainer) {
+        progressContainer.classList.add('visible');
+    }
+    if (chapterInfo) {
+        chapterInfo.textContent = `Chapter ${chapter.number} of ${state.chapters.length}`;
+    }
+    
+    // Apply current font size to new content
+    applyFontSize();
+    
+    // Setup scroll tracking for this chapter (before restoring position)
+    setupReadingProgressTracking(contentPanel);
+    
+    // Restore scroll position if we have a pending one, otherwise start at top
+    if (state.pendingScrollPosition && state.pendingScrollPosition > 0) {
+        // Small delay to let the content render
+        setTimeout(() => {
+            contentPanel.scrollTop = state.pendingScrollPosition;
+            // Update progress indicator
+            const scrollHeight = contentPanel.scrollHeight - contentPanel.clientHeight;
+            if (scrollHeight > 0) {
+                const progress = Math.round((state.pendingScrollPosition / scrollHeight) * 100);
+                updateReadingProgress(progress);
+            }
+            state.pendingScrollPosition = 0; // Clear pending
+        }, 100);
+    } else {
+        contentPanel.scrollTop = 0;
+        updateReadingProgress(0);
+    }
 }
 
 function updateChapterNavigation() {
@@ -1634,6 +1925,144 @@ function updateChapterNavigation() {
     prevBtn.disabled = state.currentChapterIndex === 0;
     nextBtn.disabled = state.currentChapterIndex >= state.chapters.length - 1;
 }
+
+// Reading progress tracking
+let readingProgressScrollHandler = null;
+
+function setupReadingProgressTracking(contentPanel) {
+    // Remove previous scroll handler if exists
+    if (readingProgressScrollHandler) {
+        contentPanel.removeEventListener('scroll', readingProgressScrollHandler);
+    }
+    
+    // Create new scroll handler
+    readingProgressScrollHandler = () => {
+        const scrollTop = contentPanel.scrollTop;
+        const scrollHeight = contentPanel.scrollHeight - contentPanel.clientHeight;
+        
+        if (scrollHeight > 0) {
+            const progress = Math.round((scrollTop / scrollHeight) * 100);
+            updateReadingProgress(progress);
+            
+            // Store scroll position for persistence (debounced in saveScrollPosition)
+            saveScrollPositionDebounced(scrollTop);
+        }
+    };
+    
+    // Add scroll listener
+    contentPanel.addEventListener('scroll', readingProgressScrollHandler);
+}
+
+function updateReadingProgress(percent) {
+    const progressBar = document.getElementById('readingProgressBar');
+    const progressPercent = document.getElementById('readingProgressPercent');
+    
+    if (progressBar) {
+        progressBar.style.width = percent + '%';
+    }
+    if (progressPercent) {
+        progressPercent.textContent = percent + '%';
+    }
+}
+
+// Debounced scroll position saving
+let scrollSaveTimeout = null;
+function saveScrollPositionDebounced(scrollTop) {
+    if (scrollSaveTimeout) {
+        clearTimeout(scrollSaveTimeout);
+    }
+    
+    scrollSaveTimeout = setTimeout(() => {
+        // Save to state for later persistence
+        state.currentScrollPosition = scrollTop;
+        
+        // If logged in, save to server
+        if (window.authClient?.isLoggedIn() && currentLibraryEntry) {
+            saveReadingProgress();
+        }
+    }, 500); // Save after 500ms of no scrolling
+}
+
+// ==================== FONT SIZE CONTROLS ====================
+
+// Font size state (percentage, 100 = default)
+let currentFontSize = 100;
+const MIN_FONT_SIZE = 50;
+const MAX_FONT_SIZE = 200;
+const FONT_SIZE_STEP = 10;
+
+// Initialize font size from localStorage
+function initFontSize() {
+    const savedSize = localStorage.getItem('readerFontSize');
+    if (savedSize) {
+        currentFontSize = parseInt(savedSize, 10);
+        applyFontSize();
+    }
+}
+
+function increaseFontSize() {
+    if (currentFontSize < MAX_FONT_SIZE) {
+        currentFontSize += FONT_SIZE_STEP;
+        applyFontSize();
+        saveFontSize();
+    }
+}
+
+function decreaseFontSize() {
+    if (currentFontSize > MIN_FONT_SIZE) {
+        currentFontSize -= FONT_SIZE_STEP;
+        applyFontSize();
+        saveFontSize();
+    }
+}
+
+function applyFontSize() {
+    const chapterContent = document.getElementById('chapterContent');
+    if (chapterContent) {
+        // Base font size is 1.25rem, scale from there
+        const scaledSize = (1.25 * currentFontSize / 100).toFixed(2);
+        chapterContent.style.fontSize = scaledSize + 'rem';
+    }
+    
+    // Update display
+    const display = document.getElementById('fontSizeDisplay');
+    if (display) {
+        display.textContent = currentFontSize + '%';
+    }
+}
+
+function saveFontSize() {
+    localStorage.setItem('readerFontSize', currentFontSize.toString());
+}
+
+// Add keyboard shortcuts for font size
+function addFontSizeShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        const activeElement = document.activeElement;
+        const isTyping = activeElement.tagName === 'INPUT' || 
+                         activeElement.tagName === 'TEXTAREA' ||
+                         activeElement.isContentEditable;
+        
+        if (isTyping) return;
+        
+        // + or = to increase font size
+        if ((e.key === '+' || e.key === '=') && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            increaseFontSize();
+        }
+        // - to decrease font size
+        if (e.key === '-' && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            decreaseFontSize();
+        }
+    });
+}
+
+// Initialize font size on page load
+document.addEventListener('DOMContentLoaded', () => {
+    initFontSize();
+    addFontSizeShortcuts();
+});
 
 function navigateChapter(direction) {
     const newIndex = state.currentChapterIndex + direction;
@@ -1970,7 +2399,9 @@ async function openLibraryBook(libraryId) {
     
     // Jump to the saved chapter after a short delay to let chapters load
     setTimeout(() => {
-        if (book.progress.chapterIndex > 0 && state.chapters.length > book.progress.chapterIndex) {
+        if (book.progress.chapterIndex >= 0 && state.chapters.length > book.progress.chapterIndex) {
+            // Store scroll position to restore after chapter loads
+            state.pendingScrollPosition = book.progress.scrollPosition || 0;
             loadChapter(book.progress.chapterIndex);
         }
     }, 500);
@@ -2096,19 +2527,40 @@ loadChapter = async function(chapterIndex) {
     await originalLoadChapter(chapterIndex);
     
     // Save progress to server if logged in and book is in library
+    // Note: scroll position will be saved separately via saveScrollPositionDebounced
     if (authClient.isLoggedIn() && currentLibraryEntry) {
         const chapter = state.chapters[chapterIndex];
         if (chapter) {
+            // Don't reset scroll position to 0 if we have a pending restore
+            const scrollPos = state.pendingScrollPosition || 0;
             libraryClient.updateProgress(
                 currentLibraryEntry.id,
                 chapterIndex,
                 chapter.title,
                 chapter.url,
-                0
+                scrollPos
             );
         }
     }
 };
+
+// Function to save reading progress with current scroll position
+function saveReadingProgress() {
+    if (!authClient.isLoggedIn() || !currentLibraryEntry) return;
+    
+    const chapter = state.chapters[state.currentChapterIndex];
+    if (!chapter) return;
+    
+    const scrollPos = state.currentScrollPosition || 0;
+    
+    libraryClient.updateProgress(
+        currentLibraryEntry.id,
+        state.currentChapterIndex,
+        chapter.title,
+        chapter.url,
+        scrollPos
+    );
+}
 
 // Override loadNovelDetails to check library status
 const originalLoadNovelDetails = loadNovelDetails;
