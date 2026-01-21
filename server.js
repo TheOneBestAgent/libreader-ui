@@ -5,12 +5,17 @@ const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const upload = multer();
 
+// Import routes
+const { router: authRouter } = require('./routes/auth');
+const libraryRouter = require('./routes/library');
+
 const app = express();
 
 // Environment configuration with defaults
 const PORT = process.env.PORT || 3001;
 const LIBREAD_URL = process.env.LIBREAD_URL || 'https://libread.com';
-const TTS_API_URL = process.env.PRONOUNCEX_TTS_API || 'http://pronouncex-api:8000';
+// Default to localhost:8000 for local dev, Docker uses PRONOUNCEX_TTS_API env var
+const TTS_API_URL = process.env.PRONOUNCEX_TTS_API || 'http://localhost:8000';
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
     ? process.env.ALLOWED_ORIGINS.split(',') 
     : ['http://localhost:3001', 'http://127.0.0.1:3001'];
@@ -79,7 +84,7 @@ app.use(express.static(__dirname));
 // Rate limiting
 const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // limit each IP to 100 requests per windowMs
+    max: 1000, // limit each IP to 1000 requests per windowMs
     message: { error: 'Too many requests, please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -87,14 +92,27 @@ const generalLimiter = rateLimit({
 
 const proxyLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 200, // Proxy endpoints get more requests
+    max: 2000, // Proxy endpoints - increased for development
     message: { error: 'Too many proxy requests, please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
 });
 
+const ttsLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 10000, // TTS polling needs many requests
+    message: { error: 'Too many TTS requests, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
 // Apply rate limiting
+app.use('/api/tts/', ttsLimiter);
 app.use('/api/', proxyLimiter);
+
+// Auth and Library routes
+app.use('/api/auth', authRouter);
+app.use('/api/library', libraryRouter);
 
 // Request logging
 app.use((req, res, next) => {

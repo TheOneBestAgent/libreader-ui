@@ -31,3 +31,6 @@ test-screenshots-backup/
 *.bak
 *.temp
 *.tmp
+
+# Local backup folder
+.backup/
