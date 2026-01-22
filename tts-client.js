@@ -349,15 +349,27 @@ class TTSClient {
     async cancelJob(jobId) {
         console.log('[TTS] Cancelling job:', jobId);
         
-        // Edge-TTS uses DELETE, Piper uses POST to /cancel
-        if (this.engine === TTSClient.ENGINES.EDGE) {
-            await fetch(this.apiBase + '/v1/tts/jobs/' + jobId + '?engine=' + this.engine, {
-                method: 'DELETE'
-            });
-        } else {
-            await fetch(this.apiBase + '/v1/tts/jobs/' + jobId + '/cancel?engine=' + this.engine, {
-                method: 'POST'
-            });
+        try {
+            // Edge-TTS uses DELETE, Piper uses POST to /cancel
+            if (this.engine === TTSClient.ENGINES.EDGE) {
+                const response = await fetch(this.apiBase + '/v1/tts/jobs/' + jobId + '?engine=' + this.engine, {
+                    method: 'DELETE'
+                });
+                // 404 is OK - job already deleted or expired
+                if (!response.ok && response.status !== 404) {
+                    console.warn('[TTS] Cancel job failed:', response.status);
+                }
+            } else {
+                const response = await fetch(this.apiBase + '/v1/tts/jobs/' + jobId + '/cancel?engine=' + this.engine, {
+                    method: 'POST'
+                });
+                if (!response.ok && response.status !== 404) {
+                    console.warn('[TTS] Cancel job failed:', response.status);
+                }
+            }
+        } catch (error) {
+            // Ignore cancel errors - job may already be complete or deleted
+            console.warn('[TTS] Cancel job error (ignored):', error.message);
         }
 
         this.stopPolling();

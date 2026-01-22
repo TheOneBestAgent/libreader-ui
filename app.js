@@ -706,6 +706,16 @@ const ttsManager = {
                 console.log('[TTS] Streaming stopped');
                 return;
             }
+            
+            // Check if job IDs have changed (new playback started while this poll was running)
+            const jobIdsChanged = !this.currentJobIds || 
+                jobIds.length !== this.currentJobIds.length ||
+                !jobIds.every((id, i) => id === this.currentJobIds[i]);
+            
+            if (jobIdsChanged) {
+                console.log('[TTS] Job IDs changed, stopping old poll loop');
+                return;
+            }
 
             try {
                 const pollStart = performance.now();
@@ -837,9 +847,28 @@ const ttsManager = {
 
             } catch (error) {
                 console.error('[TTS] Polling error:', error);
+                
+                // Check if the job IDs have changed (new playback started)
+                const jobIdsChanged = !this.currentJobIds || 
+                    jobIds.length !== this.currentJobIds.length ||
+                    !jobIds.every((id, i) => id === this.currentJobIds[i]);
+                
+                if (jobIdsChanged || !this.isStreaming) {
+                    console.log('[TTS] Job IDs changed or streaming stopped, ending poll loop');
+                    return;
+                }
+                
+                // For 404 errors (job not found), stop polling - job expired or was deleted
+                if (error.message && error.message.includes('404')) {
+                    console.log('[TTS] Job not found (404), stopping polling');
+                    this.updateStatus('Synthesis job expired. Please try again.');
+                    this.isStreaming = false;
+                    return;
+                }
+                
                 this.updateStatus('Error: ' + error.message);
                 
-                // Retry after a delay
+                // Retry after a delay for other errors
                 setTimeout(poll, pollInterval * 2);
             }
         };
