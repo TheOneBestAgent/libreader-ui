@@ -340,6 +340,83 @@
             gap: 0.5rem;
         }
 
+        /* Chapter navigation controls */
+        .chapter-nav-controls {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            padding: 0.75rem;
+            background: var(--bg-cream);
+            border-radius: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .chapter-jump-input {
+            width: 80px;
+            padding: 0.5rem;
+            border: 1px solid var(--border-warm);
+            border-radius: 6px;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+
+        .chapter-jump-btn, .chapter-load-more-btn {
+            padding: 0.5rem 0.75rem;
+            background: var(--accent-gold);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .chapter-jump-btn:hover, .chapter-load-more-btn:hover {
+            background: #b89a56;
+        }
+
+        .chapter-range-label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-left: auto;
+        }
+
+        .chapter-pagination {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background: var(--bg-cream);
+            border-radius: 8px;
+        }
+
+        .chapter-page-btn {
+            padding: 0.4rem 0.8rem;
+            background: var(--bg-warm-white);
+            border: 1px solid var(--border-warm);
+            border-radius: 4px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .chapter-page-btn:hover {
+            background: var(--border-warm);
+        }
+
+        .chapter-page-btn.active {
+            background: var(--accent-gold);
+            color: white;
+            border-color: var(--accent-gold);
+        }
+
+        .chapter-page-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .chapter-item {
             padding: 0.8rem 1rem;
             background: var(--bg-cream);
@@ -1385,7 +1462,18 @@
             <button class="back-btn" onclick="showHome()">← Back to Library</button>
             <h2 class="detail-novel-title" id="novelTitle"></h2>
             <p class="detail-novel-meta" id="novelMeta"></p>
+            
+            <!-- Chapter Navigation Controls -->
+            <div class="chapter-nav-controls" id="chapterNavControls" style="display: none;">
+                <input type="number" class="chapter-jump-input" id="chapterJumpInput" placeholder="Ch #" min="1">
+                <button class="chapter-jump-btn" onclick="jumpToChapter()">Go</button>
+                <span class="chapter-range-label" id="chapterRangeLabel"></span>
+            </div>
+            
             <div class="chapter-list" id="chapterList"></div>
+            
+            <!-- Chapter Pagination -->
+            <div class="chapter-pagination" id="chapterPagination" style="display: none;"></div>
         </div>
         <div class="chapter-content-panel">
             <div class="chapter-header">

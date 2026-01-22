@@ -67,6 +67,17 @@ function setupEventListeners() {
         });
     }
     
+    // Chapter jump input - Enter key support
+    const chapterJumpInput = document.getElementById('chapterJumpInput');
+    if (chapterJumpInput) {
+        chapterJumpInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                jumpToChapter();
+            }
+        });
+    }
+    
     // Global keyboard shortcuts
     setupKeyboardShortcuts();
 }
@@ -1626,6 +1637,9 @@ async function loadNovelDetails(novelId) {
     
     state.currentNovel = novel;
     
+    // Reset chapter list pagination to first page when loading a new novel
+    chapterListState.currentPage = 0;
+    
     // Fixed: Changed from 'welcomePage' to 'welcomeView' to match index.html
     document.getElementById('welcomeView').classList.add('hidden');
     document.getElementById('mainContent').classList.remove('active');
@@ -1634,6 +1648,12 @@ async function loadNovelDetails(novelId) {
     document.getElementById('novelTitle').textContent = novel.title;
     document.getElementById('novelMeta').textContent = novel.genres.join(' • ');
     document.getElementById('chapterList').innerHTML = '<div class="loading"><div class="loading-spinner"></div><p>Loading chapters...</p></div>';
+    
+    // Hide nav controls and pagination until chapters are loaded
+    const navControls = document.getElementById('chapterNavControls');
+    const pagination = document.getElementById('chapterPagination');
+    if (navControls) navControls.style.display = 'none';
+    if (pagination) pagination.style.display = 'none';
     
     try {
         // Use proxy to fetch the novel page (avoids CORS)
@@ -1807,12 +1827,21 @@ async function loadChapter(chapterIndex) {
     console.log('Loading:', chapter.title);
     console.log('URL:', chapter.url);
     
+    // Ensure the chapter list page shows the current chapter
+    const targetPage = Math.floor(chapterIndex / chapterListState.chaptersPerPage);
+    if (targetPage !== chapterListState.currentPage) {
+        chapterListState.currentPage = targetPage;
+        displayChapterList();
+    }
+    
     document.querySelectorAll('.chapter-item').forEach(item => {
         item.classList.remove('active');
     });
     const activeChapterItem = document.querySelector(`.chapter-item[data-index="${chapterIndex}"]`);
     if (activeChapterItem) {
         activeChapterItem.classList.add('active');
+        // Scroll the chapter item into view in the list
+        activeChapterItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
     
     document.getElementById('chapterContent').innerHTML = '<p style="text-align: center; padding: 2rem;"><div class="loading-spinner"></div><br>Loading chapter...</p>';
@@ -1920,13 +1949,40 @@ function displayNovels(novels) {
     `}).join('');
 }
 
+// Chapter list pagination state
+const chapterListState = {
+    currentPage: 0,
+    chaptersPerPage: 100
+};
+
 function displayChapterList() {
     const listContainer = document.getElementById('chapterList');
+    const navControls = document.getElementById('chapterNavControls');
+    const pagination = document.getElementById('chapterPagination');
+    const rangeLabel = document.getElementById('chapterRangeLabel');
+    const jumpInput = document.getElementById('chapterJumpInput');
+    
     if (!listContainer) return;
     
-    const displayCount = Math.min(state.chapters.length, 100);
-    const displayChapters = state.chapters.slice(0, displayCount);
+    const totalChapters = state.chapters.length;
+    const totalPages = Math.ceil(totalChapters / chapterListState.chaptersPerPage);
+    const startIndex = chapterListState.currentPage * chapterListState.chaptersPerPage;
+    const endIndex = Math.min(startIndex + chapterListState.chaptersPerPage, totalChapters);
+    const displayChapters = state.chapters.slice(startIndex, endIndex);
     
+    // Show navigation controls if there are chapters
+    if (navControls && totalChapters > 0) {
+        navControls.style.display = 'flex';
+        if (jumpInput) {
+            jumpInput.max = totalChapters;
+            jumpInput.placeholder = `1-${totalChapters}`;
+        }
+        if (rangeLabel) {
+            rangeLabel.textContent = `Showing ${startIndex + 1}-${endIndex} of ${totalChapters}`;
+        }
+    }
+    
+    // Render chapter list
     listContainer.innerHTML = displayChapters.map(chapter => {
         // XSS fix: escape HTML in chapter title
         const safeTitle = escapeHtml(chapter.title);
@@ -1937,9 +1993,108 @@ function displayChapterList() {
         </div>
     `}).join('');
     
-    if (state.chapters.length > displayCount) {
-        listContainer.innerHTML += `<div style="text-align: center; padding: 1rem; color: var(--text-muted);">Showing ${displayCount} of ${state.chapters.length} chapters...</div>`;
+    // Show pagination if more than one page
+    if (pagination && totalPages > 1) {
+        pagination.style.display = 'flex';
+        renderChapterPagination(totalPages);
+    } else if (pagination) {
+        pagination.style.display = 'none';
     }
+}
+
+function renderChapterPagination(totalPages) {
+    const pagination = document.getElementById('chapterPagination');
+    if (!pagination) return;
+    
+    const currentPage = chapterListState.currentPage;
+    let html = '';
+    
+    // Previous button
+    html += `<button class="chapter-page-btn" onclick="goToChapterPage(${currentPage - 1})" ${currentPage === 0 ? 'disabled' : ''}>← Prev</button>`;
+    
+    // Page numbers - show first, last, and pages around current
+    const pagesToShow = [];
+    pagesToShow.push(0); // Always show first page
+    
+    // Pages around current
+    for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages - 2, currentPage + 2); i++) {
+        pagesToShow.push(i);
+    }
+    
+    if (totalPages > 1) {
+        pagesToShow.push(totalPages - 1); // Always show last page
+    }
+    
+    // Remove duplicates and sort
+    const uniquePages = [...new Set(pagesToShow)].sort((a, b) => a - b);
+    
+    let lastPage = -1;
+    for (const page of uniquePages) {
+        if (lastPage !== -1 && page - lastPage > 1) {
+            html += `<span style="padding: 0 0.3rem;">...</span>`;
+        }
+        const startCh = page * chapterListState.chaptersPerPage + 1;
+        const endCh = Math.min((page + 1) * chapterListState.chaptersPerPage, state.chapters.length);
+        html += `<button class="chapter-page-btn ${page === currentPage ? 'active' : ''}" 
+                         onclick="goToChapterPage(${page})" 
+                         title="Chapters ${startCh}-${endCh}">${page + 1}</button>`;
+        lastPage = page;
+    }
+    
+    // Next button
+    html += `<button class="chapter-page-btn" onclick="goToChapterPage(${currentPage + 1})" ${currentPage === totalPages - 1 ? 'disabled' : ''}>Next →</button>`;
+    
+    pagination.innerHTML = html;
+}
+
+function goToChapterPage(page) {
+    const totalPages = Math.ceil(state.chapters.length / chapterListState.chaptersPerPage);
+    if (page < 0 || page >= totalPages) return;
+    
+    chapterListState.currentPage = page;
+    displayChapterList();
+    
+    // Scroll chapter list to top
+    const listContainer = document.getElementById('chapterList');
+    if (listContainer) {
+        listContainer.scrollTop = 0;
+    }
+}
+
+function jumpToChapter() {
+    const input = document.getElementById('chapterJumpInput');
+    if (!input) return;
+    
+    const chapterNum = parseInt(input.value);
+    if (isNaN(chapterNum) || chapterNum < 1 || chapterNum > state.chapters.length) {
+        alert(`Please enter a chapter number between 1 and ${state.chapters.length}`);
+        return;
+    }
+    
+    // Find the chapter index (chapter numbers might not match array index)
+    const chapterIndex = state.chapters.findIndex(ch => ch.number === chapterNum);
+    
+    if (chapterIndex !== -1) {
+        // Navigate to the page containing this chapter
+        const page = Math.floor(chapterIndex / chapterListState.chaptersPerPage);
+        chapterListState.currentPage = page;
+        displayChapterList();
+        
+        // Load the chapter
+        loadChapter(chapterIndex);
+    } else {
+        // If exact match not found, try to load by index (0-based)
+        const index = chapterNum - 1;
+        if (index >= 0 && index < state.chapters.length) {
+            const page = Math.floor(index / chapterListState.chaptersPerPage);
+            chapterListState.currentPage = page;
+            displayChapterList();
+            loadChapter(index);
+        }
+    }
+    
+    // Clear input
+    input.value = '';
 }
 
 function displayChapter(content, chapter) {
