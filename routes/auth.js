@@ -209,6 +209,8 @@ router.get('/me', authenticateToken, (req, res) => {
                     ttsSpeed: user.tts_speed,
                     ttsVoice: user.tts_voice,
                     ttsPreferPhonemes: !!user.tts_prefer_phonemes,
+                    ttsEngine: user.tts_engine || 'piper',
+                    ttsEdgeVoice: user.tts_edge_voice || 'en-US-AriaNeural',
                     theme: user.theme
                 }
             },
@@ -228,7 +230,7 @@ router.get('/me', authenticateToken, (req, res) => {
 // Update user preferences
 router.patch('/preferences', authenticateToken, (req, res) => {
     try {
-        const { ttsSpeed, ttsVoice, ttsPreferPhonemes, theme } = req.body;
+        const { ttsSpeed, ttsVoice, ttsPreferPhonemes, ttsEngine, ttsEdgeVoice, theme } = req.body;
         const updates = [];
         const params = [];
 
@@ -243,6 +245,16 @@ router.patch('/preferences', authenticateToken, (req, res) => {
         if (ttsPreferPhonemes !== undefined) {
             updates.push('tts_prefer_phonemes = ?');
             params.push(ttsPreferPhonemes ? 1 : 0);
+        }
+        if (ttsEngine !== undefined) {
+            // Validate engine value
+            const validEngines = ['piper', 'edge'];
+            updates.push('tts_engine = ?');
+            params.push(validEngines.includes(ttsEngine) ? ttsEngine : 'piper');
+        }
+        if (ttsEdgeVoice !== undefined) {
+            updates.push('tts_edge_voice = ?');
+            params.push(ttsEdgeVoice);
         }
         if (theme !== undefined) {
             updates.push('theme = ?');

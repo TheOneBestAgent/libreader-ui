@@ -206,6 +206,39 @@
     <div class="container">
         <h1>🎙️ TTS Settings</h1>
 
+        <!-- TTS Engine Selection -->
+        <div class="section">
+            <h2>🔊 TTS Engine</h2>
+            
+            <div class="control-group">
+                <label for="engineSelect">Select TTS Engine</label>
+                <select id="engineSelect">
+                    <option value="piper">Piper (Local) - Supports custom pronunciations</option>
+                    <option value="edge">Microsoft Edge TTS - High quality online voices</option>
+                </select>
+                <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);" id="engineDescription">
+                    Piper runs locally and supports custom pronunciation dictionaries.
+                </p>
+            </div>
+            
+            <div id="edgeVoiceSection" style="display: none;">
+                <div class="control-group">
+                    <label for="edgeVoiceSelect">Edge Voice</label>
+                    <select id="edgeVoiceSelect">
+                        <option value="en-US-AriaNeural">Loading voices...</option>
+                    </select>
+                </div>
+                <div class="row">
+                    <button class="secondary" onclick="loadEdgeVoices()">Refresh Voices</button>
+                    <button onclick="previewEdgeVoice()">Preview Voice</button>
+                </div>
+            </div>
+            
+            <div id="piperWarning" style="display: none; margin-top: 1rem; padding: 0.75rem; background: #fff3cd; border-radius: 8px; color: #856404;">
+                ⚠️ Edge TTS does not support custom pronunciations. Dictionary features will be disabled.
+            </div>
+        </div>
+
         <!-- Playback Settings -->
         <div class="section">
             <h2>🎛️ Playback Settings</h2>
@@ -312,6 +345,8 @@
     <script>
         const API_BASE = '/api/tts';
         let settings = {
+            engine: 'piper',      // 'piper' or 'edge'
+            edgeVoice: 'en-US-AriaNeural',
             rate: 1.0,
             pauseScale: 1.0,
             defaultSpeed: 1.0,
@@ -319,15 +354,28 @@
             preferPhonemes: true,
             outputMode: 'segments'
         };
+        
+        let edgeVoicesLoaded = false;
 
         // Load settings on page load
         document.addEventListener('DOMContentLoaded', () => {
             loadSettings();
             setupEventListeners();
             loadDictionary();
+            updateEngineUI();
         });
 
         function setupEventListeners() {
+            // Engine selection
+            document.getElementById('engineSelect').addEventListener('change', (e) => {
+                settings.engine = e.target.value;
+                updateEngineUI();
+            });
+            
+            document.getElementById('edgeVoiceSelect').addEventListener('change', (e) => {
+                settings.edgeVoice = e.target.value;
+            });
+            
             document.getElementById('rate').addEventListener('input', (e) => {
                 settings.rate = parseFloat(e.target.value);
                 document.getElementById('rateValue').textContent = settings.rate.toFixed(1);
@@ -355,11 +403,130 @@
                 settings.outputMode = e.target.value;
             });
         }
+        
+        function updateEngineUI() {
+            const engine = settings.engine;
+            const edgeSection = document.getElementById('edgeVoiceSection');
+            const piperWarning = document.getElementById('piperWarning');
+            const descEl = document.getElementById('engineDescription');
+            const phonemesCheckbox = document.getElementById('preferPhonemes');
+            const dictionarySection = document.querySelector('.section:has(#wordInput)');
+            
+            if (engine === 'edge') {
+                edgeSection.style.display = 'block';
+                piperWarning.style.display = 'block';
+                descEl.textContent = 'Microsoft Edge TTS offers high-quality neural voices but does not support custom pronunciations.';
+                phonemesCheckbox.disabled = true;
+                phonemesCheckbox.checked = false;
+                if (dictionarySection) dictionarySection.style.opacity = '0.5';
+                
+                // Load voices if not loaded
+                if (!edgeVoicesLoaded) {
+                    loadEdgeVoices();
+                }
+            } else {
+                edgeSection.style.display = 'none';
+                piperWarning.style.display = 'none';
+                descEl.textContent = 'Piper runs locally and supports custom pronunciation dictionaries.';
+                phonemesCheckbox.disabled = false;
+                if (dictionarySection) dictionarySection.style.opacity = '1';
+            }
+        }
+        
+        async function loadEdgeVoices() {
+            const selectEl = document.getElementById('edgeVoiceSelect');
+            selectEl.innerHTML = '<option value="">Loading voices...</option>';
+            
+            try {
+                const response = await fetch(API_BASE + '/v1/tts/voices?engine=edge');
+                const data = await response.json();
+                
+                if (data.voices && data.voices.length > 0) {
+                    // Group voices by locale
+                    const grouped = {};
+                    data.voices.forEach(v => {
+                        const locale = v.locale || 'Other';
+                        if (!grouped[locale]) grouped[locale] = [];
+                        grouped[locale].push(v);
+                    });
+                    
+                    // Sort locales, put English first
+                    const sortedLocales = Object.keys(grouped).sort((a, b) => {
+                        if (a.startsWith('en-')) return -1;
+                        if (b.startsWith('en-')) return 1;
+                        return a.localeCompare(b);
+                    });
+                    
+                    let html = '';
+                    sortedLocales.forEach(locale => {
+                        html += `<optgroup label="${locale}">`;
+                        grouped[locale].forEach(v => {
+                            const selected = v.short_name === settings.edgeVoice ? 'selected' : '';
+                            html += `<option value="${v.short_name}" ${selected}>${v.name} (${v.gender})</option>`;
+                        });
+                        html += '</optgroup>';
+                    });
+                    
+                    selectEl.innerHTML = html;
+                    edgeVoicesLoaded = true;
+                } else {
+                    selectEl.innerHTML = '<option value="en-US-AriaNeural">en-US-AriaNeural (Default)</option>';
+                }
+            } catch (error) {
+                console.error('Failed to load Edge voices:', error);
+                selectEl.innerHTML = '<option value="en-US-AriaNeural">en-US-AriaNeural (Default)</option>';
+                showStatus('Failed to load Edge TTS voices. Is the service running?', 'error');
+            }
+        }
+        
+        async function previewEdgeVoice() {
+            const voice = document.getElementById('edgeVoiceSelect').value;
+            const text = 'Hello! This is a preview of the selected voice.';
+            
+            try {
+                showStatus('Generating preview...', 'success');
+                
+                const response = await fetch(API_BASE + '/v1/tts/jobs?engine=edge', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, voice })
+                });
+                
+                const data = await response.json();
+                if (!data.job_id) throw new Error('No job ID returned');
+                
+                // Poll for completion
+                let status;
+                for (let i = 0; i < 30; i++) {
+                    await new Promise(r => setTimeout(r, 500));
+                    const statusRes = await fetch(API_BASE + '/v1/tts/jobs/' + data.job_id + '?engine=edge');
+                    status = await statusRes.json();
+                    if (status.status === 'completed') break;
+                    if (status.status === 'failed') throw new Error(status.error || 'Synthesis failed');
+                }
+                
+                if (status.status === 'completed' && status.segments && status.segments[0]) {
+                    const audioUrl = API_BASE + status.segments[0].audio_url + '?engine=edge';
+                    const audio = new Audio(audioUrl);
+                    audio.play();
+                    showStatus('Playing preview...', 'success');
+                }
+            } catch (error) {
+                console.error('Preview error:', error);
+                showStatus('Failed to preview voice: ' + error.message, 'error');
+            }
+        }
 
         function loadSettings() {
             const saved = localStorage.getItem('ttsSettings');
             if (saved) {
                 settings = { ...settings, ...JSON.parse(saved) };
+                
+                // Engine settings
+                document.getElementById('engineSelect').value = settings.engine || 'piper';
+                if (settings.edgeVoice) {
+                    document.getElementById('edgeVoiceSelect').value = settings.edgeVoice;
+                }
                 
                 document.getElementById('rate').value = settings.rate;
                 document.getElementById('rateValue').textContent = settings.rate.toFixed(1);
@@ -398,6 +565,8 @@
             if (confirm('Reset all settings to defaults?')) {
                 localStorage.removeItem('ttsSettings');
                 settings = {
+                    engine: 'piper',
+                    edgeVoice: 'en-US-AriaNeural',
                     rate: 1.0,
                     pauseScale: 1.0,
                     defaultSpeed: 1.0,
@@ -405,7 +574,9 @@
                     preferPhonemes: true,
                     outputMode: 'segments'
                 };
+                document.getElementById('engineSelect').value = 'piper';
                 loadSettings();
+                updateEngineUI();
                 showStatus('✅ Settings reset to defaults', 'success');
             }
         }

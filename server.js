@@ -14,8 +14,11 @@ const app = express();
 // Environment configuration with defaults
 const PORT = process.env.PORT || 3001;
 const LIBREAD_URL = process.env.LIBREAD_URL || 'https://libread.com';
-// Default to localhost:8000 for local dev, Docker uses PRONOUNCEX_TTS_API env var
-const TTS_API_URL = process.env.PRONOUNCEX_TTS_API || 'http://localhost:8000';
+// TTS API URLs - Default to localhost for local dev, Docker uses env vars
+const PIPER_TTS_API_URL = process.env.PRONOUNCEX_TTS_API || 'http://localhost:8000';
+const EDGE_TTS_API_URL = process.env.EDGE_TTS_API || 'http://localhost:8001';
+// Legacy support - default TTS engine
+const TTS_API_URL = PIPER_TTS_API_URL;
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
     ? process.env.ALLOWED_ORIGINS.split(',') 
     : ['http://localhost:3001', 'http://127.0.0.1:3001'];
@@ -127,22 +130,46 @@ app.get('/settings', (req, res) => {
     res.sendFile(__dirname + '/settings.html');
 });
 
-// TTS Proxy
+// Helper function to get TTS API URL based on engine selection
+function getTtsApiUrl(engine) {
+    switch (engine) {
+        case 'edge':
+        case 'edge-tts':
+            return EDGE_TTS_API_URL;
+        case 'piper':
+        case 'pronouncex':
+        default:
+            return PIPER_TTS_API_URL;
+    }
+}
+
+// TTS Proxy - supports multiple engines via ?engine= query param
 app.all('/api/tts/*', async (req, res) => {
     try {
         const ttsPath = req.path.replace('/api/tts', '');
-        const targetUrl = TTS_API_URL + ttsPath;
+        
+        // Get engine from query param, body, or default to piper
+        const engine = req.query.engine || (req.body && req.body.engine) || 'piper';
+        const baseUrl = getTtsApiUrl(engine);
+        const targetUrl = baseUrl + ttsPath;
+        
+        if (NODE_ENV !== 'production') {
+            console.log(`[TTS Proxy] Engine: ${engine}, Target: ${targetUrl}`);
+        }
         
         const requestOptions = {
             method: req.method,
             headers: {
                 'Content-Type': req.headers['content-type'] || 'application/json',
-                'Accept': 'application/json, audio/ogg'
+                'Accept': 'application/json, audio/ogg, audio/mpeg'
             }
         };
         
         if (req.method === 'POST' && req.body) {
-            requestOptions.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+            // Remove engine from body before forwarding (it's our routing param)
+            const bodyToSend = { ...req.body };
+            delete bodyToSend.engine;
+            requestOptions.body = JSON.stringify(bodyToSend);
         }
         
         const response = await fetch(targetUrl, requestOptions);

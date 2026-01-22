@@ -1,17 +1,46 @@
-// PronounceX TTS Client
-// Handles all communication with the PronounceX TTS service
+// TTS Client
+// Handles all communication with TTS services (PronounceX/Piper and Edge-TTS)
+// Supports multiple TTS engines with automatic routing
 
 class TTSClient {
     // Maximum characters per chunk to avoid 413 errors
     // PronounceX API limit is 20000 chars; using 5000 for comfortable margin
+    // Edge-TTS handles longer text but we use same limit for consistency
     static MAX_CHUNK_SIZE = 5000;
+    
+    // Available TTS engines
+    static ENGINES = {
+        PIPER: 'piper',      // PronounceX/Piper - supports custom phonemes
+        EDGE: 'edge'         // Microsoft Edge TTS - high quality, no phoneme support
+    };
 
-    constructor(apiBase = '/api/tts') {
+    constructor(apiBase = '/api/tts', engine = TTSClient.ENGINES.PIPER) {
         this.apiBase = apiBase;
+        this.engine = engine;
         this.currentJobId = null;
         this.currentJobIds = []; // For multi-chunk jobs
         this.pollingInterval = null;
         this.isPolling = false;
+    }
+    
+    // Set the TTS engine to use
+    setEngine(engine) {
+        if (engine === 'edge' || engine === 'edge-tts') {
+            this.engine = TTSClient.ENGINES.EDGE;
+        } else {
+            this.engine = TTSClient.ENGINES.PIPER;
+        }
+        console.log('[TTS] Engine set to:', this.engine);
+    }
+    
+    // Get current engine
+    getEngine() {
+        return this.engine;
+    }
+    
+    // Check if current engine supports phonemes
+    supportsPhonemes() {
+        return this.engine === TTSClient.ENGINES.PIPER;
     }
 
     // Split text into chunks at sentence boundaries
@@ -85,13 +114,17 @@ class TTSClient {
 
     // Create a TTS synthesis job for a single chunk
     // Maps to: POST /v1/tts/jobs
+    // Engine is passed via payload and routed by server.js proxy
     async synthesize(text, options = {}) {
         const payload = {
             text: text,
+            engine: this.engine,  // Tell server which TTS engine to use
             // Disable phonemes - glow-tts model produces better output with direct text
+            // Note: edge-tts ignores this parameter (doesn't support phonemes)
             prefer_phonemes: options.preferPhonemes === true ? true : false
         };
 
+        // For Piper/PronounceX
         if (options.model || options.model_id) {
             payload.model_id = options.model || options.model_id;
         }
@@ -99,10 +132,17 @@ class TTSClient {
         if (options.readingProfile) {
             payload.reading_profile = options.readingProfile;
         }
+        
+        // For Edge-TTS: voice parameter
+        if (options.voice) {
+            payload.voice = options.voice;
+        }
 
         console.log('[TTS] Submitting synthesis job:', {
+            engine: this.engine,
             textLength: text.length,
             model: payload.model_id,
+            voice: payload.voice,
             preferPhonemes: payload.prefer_phonemes
         });
 
@@ -236,7 +276,8 @@ class TTSClient {
     // Get job status/manifest
     // Maps to: GET /v1/tts/jobs/{job_id}
     async getJobStatus(jobId) {
-        const response = await fetch(this.apiBase + '/v1/tts/jobs/' + jobId);
+        const url = this.apiBase + '/v1/tts/jobs/' + jobId + '?engine=' + this.engine;
+        const response = await fetch(url);
         
         if (!response.ok) {
             throw new Error('Failed to get job status: ' + response.status);
@@ -304,13 +345,20 @@ class TTSClient {
     }
 
     // Cancel a job
-    // Maps to: POST /v1/tts/jobs/{job_id}/cancel
+    // Maps to: POST /v1/tts/jobs/{job_id}/cancel or DELETE /v1/tts/jobs/{job_id}
     async cancelJob(jobId) {
         console.log('[TTS] Cancelling job:', jobId);
         
-        await fetch(this.apiBase + '/v1/tts/jobs/' + jobId + '/cancel', {
-            method: 'POST'
-        });
+        // Edge-TTS uses DELETE, Piper uses POST to /cancel
+        if (this.engine === TTSClient.ENGINES.EDGE) {
+            await fetch(this.apiBase + '/v1/tts/jobs/' + jobId + '?engine=' + this.engine, {
+                method: 'DELETE'
+            });
+        } else {
+            await fetch(this.apiBase + '/v1/tts/jobs/' + jobId + '/cancel?engine=' + this.engine, {
+                method: 'POST'
+            });
+        }
 
         this.stopPolling();
     }
@@ -318,7 +366,8 @@ class TTSClient {
     // Get playlist for sequential playback
     // Maps to: GET /v1/tts/jobs/{job_id}/playlist.json
     async getPlaylist(jobId) {
-        const response = await fetch(this.apiBase + '/v1/tts/jobs/' + jobId + '/playlist.json');
+        const url = this.apiBase + '/v1/tts/jobs/' + jobId + '/playlist.json?engine=' + this.engine;
+        const response = await fetch(url);
         
         if (!response.ok) {
             throw new Error('Failed to get playlist: ' + response.status);
@@ -328,14 +377,15 @@ class TTSClient {
     }
 
     // Get merged audio URL
-    // Maps to: GET /v1/tts/jobs/{job_id}/audio.ogg
+    // Maps to: GET /v1/tts/jobs/{job_id}/audio.ogg (Piper) or audio.mp3 (Edge)
     getAudioUrl(jobId) {
-        return this.apiBase + '/v1/tts/jobs/' + jobId + '/audio.ogg';
+        const ext = this.engine === TTSClient.ENGINES.EDGE ? 'mp3' : 'ogg';
+        return this.apiBase + '/v1/tts/jobs/' + jobId + '/audio.' + ext + '?engine=' + this.engine;
     }
 
     // Get individual segment audio URL
     getSegmentUrl(jobId, segmentId) {
-        return this.apiBase + '/v1/tts/jobs/' + jobId + '/segments/' + segmentId;
+        return this.apiBase + '/v1/tts/jobs/' + jobId + '/segments/' + segmentId + '?engine=' + this.engine;
     }
 
     // Dictionary: Learn a word/phrase
@@ -408,15 +458,32 @@ class TTSClient {
         return await response.json();
     }
 
-    // Get available models
-    // Maps to: GET /v1/models
+    // Get available models (Piper) or voices (Edge-TTS)
+    // Maps to: GET /v1/models (Piper) or GET /v1/tts/voices (Edge)
     async getModels() {
-        const response = await fetch(this.apiBase + '/v1/models');
+        const url = this.engine === TTSClient.ENGINES.EDGE
+            ? this.apiBase + '/v1/tts/voices?engine=' + this.engine
+            : this.apiBase + '/v1/models?engine=' + this.engine;
+        
+        const response = await fetch(url);
         
         if (!response.ok) {
-            throw new Error('Failed to get models: ' + response.status);
+            throw new Error('Failed to get models/voices: ' + response.status);
         }
 
+        return await response.json();
+    }
+    
+    // Get available Edge-TTS voices (convenience method)
+    // Returns list of voices with id, name, gender, locale
+    async getEdgeVoices() {
+        const url = this.apiBase + '/v1/tts/voices?engine=edge';
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error('Failed to get Edge-TTS voices: ' + response.status);
+        }
+        
         return await response.json();
     }
 
@@ -424,7 +491,8 @@ class TTSClient {
     // Maps to: GET /health
     async healthCheck() {
         try {
-            const response = await fetch(this.apiBase + '/health');
+            const url = this.apiBase + '/health?engine=' + this.engine;
+            const response = await fetch(url);
             if (!response.ok) {
                 return { status: 'error', error: response.status };
             }

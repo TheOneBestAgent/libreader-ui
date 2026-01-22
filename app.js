@@ -297,11 +297,77 @@ const ttsManager = {
     init() {
         if (typeof TTSClient !== 'undefined') {
             this.client = new TTSClient('/api/tts');
+            
+            // Load engine preference from localStorage
+            this.loadEngineFromSettings();
         }
         
         // Don't create AudioContext until user interaction (browser autoplay policy)
         // Will be created on first play()
         console.log('[TTS] Manager initialized (Web Audio API mode)');
+    },
+    
+    // Load TTS engine preference from settings
+    loadEngineFromSettings() {
+        try {
+            const saved = localStorage.getItem('ttsSettings');
+            if (saved) {
+                const settings = JSON.parse(saved);
+                if (settings.engine && this.client) {
+                    this.client.setEngine(settings.engine);
+                    console.log('[TTS] Engine loaded from settings:', settings.engine);
+                }
+            }
+        } catch (error) {
+            console.warn('[TTS] Failed to load engine from settings:', error);
+        }
+    },
+    
+    // Set TTS engine (called from settings or externally)
+    setEngine(engine) {
+        if (this.client) {
+            this.client.setEngine(engine);
+            console.log('[TTS] Engine changed to:', engine);
+        }
+    },
+    
+    // Get current engine
+    getEngine() {
+        return this.client ? this.client.getEngine() : 'piper';
+    },
+    
+    // Check if current engine supports phonemes
+    supportsPhonemes() {
+        return this.client ? this.client.supportsPhonemes() : true;
+    },
+    
+    // Get synthesis options based on current settings and engine
+    getSynthesisOptions() {
+        const options = {};
+        
+        try {
+            const saved = localStorage.getItem('ttsSettings');
+            if (saved) {
+                const settings = JSON.parse(saved);
+                
+                // For Edge TTS, pass the selected voice
+                if (settings.engine === 'edge' && settings.edgeVoice) {
+                    options.voice = settings.edgeVoice;
+                }
+                
+                // For Piper, pass model and phoneme preferences
+                if (settings.engine === 'piper' || !settings.engine) {
+                    if (settings.model && settings.model !== 'default') {
+                        options.model = settings.model;
+                    }
+                    options.preferPhonemes = settings.preferPhonemes !== false;
+                }
+            }
+        } catch (error) {
+            console.warn('[TTS] Failed to load synthesis options:', error);
+        }
+        
+        return options;
     },
     
     // Initialize Web Audio API (called on first user interaction)
@@ -487,8 +553,12 @@ const ttsManager = {
             console.log('[TTS] Starting synthesis for', text.length, 'characters');
             console.log('[TTS] Timing: Request sent at', this.timingStats.startTime.toFixed(2), 'ms');
             
+            // Build synthesis options based on current engine and settings
+            const synthOptions = this.getSynthesisOptions();
+            console.log('[TTS] Using engine:', this.getEngine(), 'options:', synthOptions);
+            
             // Use chunked synthesis to handle long texts and avoid 413 errors
-            const result = await this.client.synthesizeChunked(text);
+            const result = await this.client.synthesizeChunked(text, synthOptions);
             this.currentJobIds = result.job_ids;
             this.currentJobId = result.job_ids[0]; // For backward compatibility
             this.isChunked = result.is_chunked;
