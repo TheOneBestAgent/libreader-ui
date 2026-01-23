@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 import aiofiles
 import edge_tts
 import redis.asyncio as redis
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -215,7 +215,7 @@ async def list_voices():
 
 
 @app.post("/v1/tts/jobs")
-async def create_job(request: SynthesisRequest):
+async def create_job(request: SynthesisRequest, background_tasks: BackgroundTasks):
     """
     Create a new TTS synthesis job.
     Compatible with PronounceX TTS API.
@@ -243,14 +243,96 @@ async def create_job(request: SynthesisRequest):
     r = await get_redis()
     await store_job(r, job_id, job_data)
     
-    # Start background processing
-    asyncio.create_task(process_job(job_id, request.text.strip(), voice))
+    # Start background processing using FastAPI's BackgroundTasks
+    # This ensures the task runs properly in the uvicorn worker context
+    background_tasks.add_task(process_job_sync, job_id, request.text.strip(), voice)
     
     return {
         "job_id": job_id,
         "status": "pending",
         "message": "Job created successfully"
     }
+
+
+def process_job_sync(job_id: str, text: str, voice: str):
+    """
+    Synchronous wrapper for process_job that creates its own event loop.
+    This is needed because BackgroundTasks runs in a thread pool.
+    """
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(process_job_with_new_redis(job_id, text, voice))
+    finally:
+        loop.close()
+
+
+async def process_job_with_new_redis(job_id: str, text: str, voice: str):
+    """
+    Process a TTS job with a fresh Redis connection.
+    This is needed when running in a background thread with a new event loop.
+    """
+    import json
+    
+    # Create a new Redis connection for this event loop
+    r = redis.from_url(REDIS_URL, decode_responses=False)
+    
+    try:
+        # Get job data
+        key = f"edge-tts:job:{job_id}"
+        data = await r.get(key)
+        if not data:
+            print(f"[Edge-TTS] Job {job_id} not found")
+            return
+        
+        job_data = json.loads(data)
+        
+        # Update job to processing
+        job_data["status"] = "processing"
+        await r.set(key, json.dumps(job_data), ex=JOB_EXPIRY_SECONDS)
+        
+        # Generate segment info
+        segment_id = generate_segment_id(job_id, 0)
+        output_path = get_cache_path(job_id, segment_id)
+        
+        # Synthesize
+        print(f"[Edge-TTS] Starting synthesis for job {job_id}, {len(text)} chars")
+        success = await synthesize_text(text, job_data.get("voice", DEFAULT_VOICE), output_path)
+        
+        if success and output_path.exists():
+            file_size = output_path.stat().st_size
+            job_data["status"] = "completed"
+            job_data["segments"] = [{
+                "id": segment_id,
+                "index": 0,
+                "status": "completed",
+                "audio_url": f"/v1/tts/jobs/{job_id}/segments/{segment_id}/audio",
+                "file_size": file_size,
+                "format": "audio/mpeg"
+            }]
+            print(f"[Edge-TTS] Job {job_id} completed, file size: {file_size}")
+        else:
+            job_data["status"] = "failed"
+            job_data["error"] = "Synthesis failed"
+            print(f"[Edge-TTS] Job {job_id} failed")
+        
+        await r.set(key, json.dumps(job_data), ex=JOB_EXPIRY_SECONDS)
+        
+    except Exception as e:
+        print(f"[Edge-TTS] Job processing error: {e}")
+        try:
+            key = f"edge-tts:job:{job_id}"
+            data = await r.get(key)
+            if data:
+                job_data = json.loads(data)
+                job_data["status"] = "failed"
+                job_data["error"] = str(e)
+                await r.set(key, json.dumps(job_data), ex=JOB_EXPIRY_SECONDS)
+        except Exception as e2:
+            print(f"[Edge-TTS] Failed to update job status: {e2}")
+    finally:
+        await r.close()
 
 
 @app.get("/v1/tts/jobs/{job_id}")
