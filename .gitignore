@@ -34,3 +34,7 @@ test-screenshots-backup/
 
 # Local backup folder
 .backup/
+
+# SQLite WAL files (transient, shouldn't be tracked)
+data/*.db-wal
+data/*.db-shm

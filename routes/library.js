@@ -390,8 +390,12 @@ router.get('/:libraryId/annotations', (req, res) => {
         const params = [req.params.libraryId, req.user.userId];
         
         if (chapterIndex !== undefined) {
+            const parsedIndex = parseInt(chapterIndex, 10);
+            if (isNaN(parsedIndex) || parsedIndex < 0) {
+                return res.status(400).json({ error: 'Invalid chapter index' });
+            }
             query += ' AND chapter_index = ?';
-            params.push(parseInt(chapterIndex));
+            params.push(parsedIndex);
         }
         
         query += ' ORDER BY chapter_index, start_offset';
@@ -425,11 +429,16 @@ router.get('/:libraryId/annotations', (req, res) => {
 // Get annotations for a specific chapter
 router.get('/:libraryId/chapters/:chapterIndex/annotations', (req, res) => {
     try {
+        const chapterIndex = parseInt(req.params.chapterIndex, 10);
+        if (isNaN(chapterIndex) || chapterIndex < 0) {
+            return res.status(400).json({ error: 'Invalid chapter index' });
+        }
+        
         const annotations = db.prepare(`
             SELECT * FROM annotations 
             WHERE library_id = ? AND user_id = ? AND chapter_index = ?
             ORDER BY start_offset
-        `).all(req.params.libraryId, req.user.userId, parseInt(req.params.chapterIndex));
+        `).all(req.params.libraryId, req.user.userId, chapterIndex);
         
         res.json({
             annotations: annotations.map(a => ({
@@ -474,6 +483,21 @@ router.post('/:libraryId/annotations', (req, res) => {
         // Validation
         if (chapterIndex === undefined || startOffset === undefined || endOffset === undefined) {
             return res.status(400).json({ error: 'Chapter index and text offsets are required' });
+        }
+        
+        // Validate numeric values
+        const parsedChapterIndex = parseInt(chapterIndex, 10);
+        const parsedStartOffset = parseInt(startOffset, 10);
+        const parsedEndOffset = parseInt(endOffset, 10);
+        
+        if (isNaN(parsedChapterIndex) || parsedChapterIndex < 0) {
+            return res.status(400).json({ error: 'Invalid chapter index' });
+        }
+        if (isNaN(parsedStartOffset) || parsedStartOffset < 0) {
+            return res.status(400).json({ error: 'Invalid start offset' });
+        }
+        if (isNaN(parsedEndOffset) || parsedEndOffset < 0 || parsedEndOffset <= parsedStartOffset) {
+            return res.status(400).json({ error: 'Invalid end offset' });
         }
         
         if (!selectedText || selectedText.trim().length === 0) {

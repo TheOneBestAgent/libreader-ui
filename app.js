@@ -2534,6 +2534,7 @@ function updateReadingProgress(percent) {
 }
 
 // Debounced scroll position saving
+// Note: This only saves to state. Network sync is handled by progressSync.
 let scrollSaveTimeout = null;
 function saveScrollPositionDebounced(scrollTop) {
     if (scrollSaveTimeout) {
@@ -2544,9 +2545,9 @@ function saveScrollPositionDebounced(scrollTop) {
         // Save to state for later persistence
         state.currentScrollPosition = scrollTop;
         
-        // If logged in, save to server
-        if (window.authClient?.isLoggedIn() && currentLibraryEntry) {
-            saveReadingProgress();
+        // Mark progress as dirty for sync system (don't call saveReadingProgress directly)
+        if (window.authClient?.isLoggedIn() && currentLibraryEntry && window.progressSync) {
+            progressSync.markDirty();
         }
     }, 500); // Save after 500ms of no scrolling
 }
@@ -3261,3 +3262,796 @@ async function doImport() {
         errorEl.classList.add('visible');
     }
 }
+
+// ==================== ANNOTATIONS SYSTEM ====================
+
+const annotationManager = {
+    annotations: [],           // Current chapter's annotations
+    allAnnotations: [],        // All annotations for current book
+    selectedColor: 'yellow',   // Current highlight color
+    pendingSelection: null,    // Text selection waiting for action
+    isEnabled: true,           // Whether annotation system is active
+    
+    // Available highlight colors
+    colors: {
+        yellow: { bg: 'rgba(255, 235, 59, 0.4)', border: '#FDD835' },
+        green: { bg: 'rgba(129, 199, 132, 0.4)', border: '#66BB6A' },
+        blue: { bg: 'rgba(100, 181, 246, 0.4)', border: '#42A5F5' },
+        pink: { bg: 'rgba(240, 98, 146, 0.4)', border: '#EC407A' },
+        purple: { bg: 'rgba(186, 104, 200, 0.4)', border: '#AB47BC' },
+        orange: { bg: 'rgba(255, 167, 38, 0.4)', border: '#FFA726' }
+    },
+    
+    init() {
+        this.setupTextSelection();
+        this.setupAnnotationPanel();
+        console.log('[Annotations] Manager initialized');
+    },
+    
+    // Set up text selection listener for highlighting
+    setupTextSelection() {
+        const chapterContent = document.getElementById('chapterContent');
+        if (!chapterContent) return;
+        
+        // Listen for mouseup to detect text selection
+        document.addEventListener('mouseup', (e) => {
+            // Only handle selections in chapter content
+            if (!e.target.closest('#chapterContent')) {
+                this.hideSelectionPopup();
+                return;
+            }
+            
+            // Small delay to let selection finalize
+            setTimeout(() => this.handleTextSelection(e), 10);
+        });
+        
+        // Hide popup when clicking elsewhere
+        document.addEventListener('mousedown', (e) => {
+            if (!e.target.closest('.annotation-popup') && !e.target.closest('#chapterContent')) {
+                this.hideSelectionPopup();
+            }
+        });
+    },
+    
+    handleTextSelection(e) {
+        const selection = window.getSelection();
+        const selectedText = selection.toString().trim();
+        
+        if (!selectedText || selectedText.length < 2) {
+            this.hideSelectionPopup();
+            return;
+        }
+        
+        // Don't show if not logged in or book not in library
+        if (!window.authClient?.isLoggedIn() || !currentLibraryEntry) {
+            return;
+        }
+        
+        // Get selection range info
+        const range = selection.getRangeAt(0);
+        const chapterContent = document.getElementById('chapterContent');
+        
+        // Calculate offsets relative to chapter content
+        const offsets = this.getSelectionOffsets(range, chapterContent);
+        if (!offsets) return;
+        
+        // Get paragraph info for more reliable positioning
+        const paragraphInfo = this.getParagraphInfo(range);
+        
+        // Store pending selection
+        this.pendingSelection = {
+            text: selectedText,
+            startOffset: offsets.start,
+            endOffset: offsets.end,
+            range: range.cloneRange(),
+            paragraphIndex: paragraphInfo.index,
+            paragraphPreview: paragraphInfo.preview
+        };
+        
+        // Show selection popup near the selection
+        this.showSelectionPopup(e.clientX, e.clientY);
+    },
+    
+    // Calculate character offsets from start of chapter content
+    getSelectionOffsets(range, container) {
+        try {
+            const preSelectionRange = document.createRange();
+            preSelectionRange.selectNodeContents(container);
+            preSelectionRange.setEnd(range.startContainer, range.startOffset);
+            const start = preSelectionRange.toString().length;
+            
+            return {
+                start: start,
+                end: start + range.toString().length
+            };
+        } catch (e) {
+            console.error('[Annotations] Error getting offsets:', e);
+            return null;
+        }
+    },
+    
+    // Get paragraph info for the selection
+    getParagraphInfo(range) {
+        const paragraph = range.startContainer.parentElement?.closest('p') || 
+                         range.startContainer.closest?.('p');
+        
+        if (paragraph) {
+            const allParagraphs = document.querySelectorAll('#chapterContent p');
+            const index = Array.from(allParagraphs).indexOf(paragraph);
+            return {
+                index: index >= 0 ? index : null,
+                preview: paragraph.textContent.substring(0, 100)
+            };
+        }
+        
+        return { index: null, preview: null };
+    },
+    
+    // Show popup with highlight options
+    showSelectionPopup(x, y) {
+        this.hideSelectionPopup();
+        
+        const popup = document.createElement('div');
+        popup.className = 'annotation-popup';
+        popup.innerHTML = `
+            <div class="annotation-popup-colors">
+                ${Object.keys(this.colors).map(color => `
+                    <button class="annotation-color-btn ${color === this.selectedColor ? 'active' : ''}" 
+                            data-color="${color}" 
+                            style="background: ${this.colors[color].bg}; border-color: ${this.colors[color].border};"
+                            title="${color}"></button>
+                `).join('')}
+            </div>
+            <div class="annotation-popup-actions">
+                <button class="annotation-action-btn highlight-btn" title="Highlight">
+                    <span>Highlight</span>
+                </button>
+                <button class="annotation-action-btn note-btn" title="Add Note">
+                    <span>+ Note</span>
+                </button>
+            </div>
+        `;
+        
+        // Position popup
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        let left = x;
+        let top = y + 10;
+        
+        // Adjust if too close to edges
+        if (left + 200 > viewportWidth) left = viewportWidth - 220;
+        if (top + 80 > viewportHeight) top = y - 90;
+        
+        popup.style.left = left + 'px';
+        popup.style.top = top + 'px';
+        
+        document.body.appendChild(popup);
+        
+        // Add event listeners
+        popup.querySelectorAll('.annotation-color-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.selectedColor = btn.dataset.color;
+                popup.querySelectorAll('.annotation-color-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+        });
+        
+        popup.querySelector('.highlight-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.createHighlight();
+        });
+        
+        popup.querySelector('.note-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.createHighlightWithNote();
+        });
+    },
+    
+    hideSelectionPopup() {
+        const existing = document.querySelector('.annotation-popup');
+        if (existing) existing.remove();
+    },
+    
+    // Create a highlight from current selection
+    async createHighlight(withNote = false) {
+        if (!this.pendingSelection || !currentLibraryEntry) return;
+        
+        const sel = this.pendingSelection;
+        let note = null;
+        
+        if (withNote) {
+            note = prompt('Add a note to this highlight:');
+            if (note === null) return; // Cancelled
+        }
+        
+        // Save to server
+        const annotation = await this.saveAnnotation({
+            chapterIndex: state.currentChapterIndex,
+            chapterUrl: state.chapters[state.currentChapterIndex]?.url,
+            type: 'highlight',
+            color: this.selectedColor,
+            selectedText: sel.text,
+            note: note,
+            startOffset: sel.startOffset,
+            endOffset: sel.endOffset,
+            paragraphIndex: sel.paragraphIndex,
+            paragraphTextPreview: sel.paragraphPreview
+        });
+        
+        if (annotation) {
+            // Add to local array and render immediately
+            // Note: We render here directly since we know the exact position
+            // loadAnnotations() clears before rendering, so no double-render risk
+            this.annotations.push(annotation);
+            this.renderHighlight(annotation);
+            this.updateAnnotationPanel();
+        }
+        
+        // Clear selection
+        window.getSelection().removeAllRanges();
+        this.hideSelectionPopup();
+        this.pendingSelection = null;
+    },
+    
+    createHighlightWithNote() {
+        this.createHighlight(true);
+    },
+    
+    // Save annotation to server
+    async saveAnnotation(data) {
+        if (!currentLibraryEntry) return null;
+        
+        try {
+            const response = await fetch(`${PROXY_BASE}/library/${currentLibraryEntry.id}/annotations`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authClient.getToken()}`
+                },
+                body: JSON.stringify(data)
+            });
+            
+            if (!response.ok) throw new Error('Failed to save annotation');
+            
+            const result = await response.json();
+            console.log('[Annotations] Saved:', result.annotation);
+            return result.annotation;
+        } catch (error) {
+            console.error('[Annotations] Save error:', error);
+            return null;
+        }
+    },
+    
+    // Load annotations for current chapter
+    async loadAnnotations() {
+        if (!currentLibraryEntry) {
+            this.annotations = [];
+            this.updateAnnotationPanel();
+            return;
+        }
+        
+        try {
+            const response = await fetch(
+                `${PROXY_BASE}/library/${currentLibraryEntry.id}/chapters/${state.currentChapterIndex}/annotations`,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${authClient.getToken()}`
+                    }
+                }
+            );
+            
+            if (!response.ok) throw new Error('Failed to load annotations');
+            
+            const data = await response.json();
+            this.annotations = data.annotations || [];
+            console.log('[Annotations] Loaded', this.annotations.length, 'annotations for chapter', state.currentChapterIndex);
+            
+            // Clear existing highlights before re-rendering to avoid duplicates
+            this.clearRenderedHighlights();
+            
+            // Render all highlights
+            this.renderAllHighlights();
+            this.updateAnnotationPanel();
+        } catch (error) {
+            console.error('[Annotations] Load error:', error);
+            this.annotations = [];
+            this.updateAnnotationPanel();
+        }
+    },
+    
+    // Load all annotations for the book (for the sidebar)
+    async loadAllAnnotations() {
+        if (!currentLibraryEntry) {
+            this.allAnnotations = [];
+            return;
+        }
+        
+        try {
+            const response = await fetch(
+                `${PROXY_BASE}/library/${currentLibraryEntry.id}/annotations`,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${authClient.getToken()}`
+                    }
+                }
+            );
+            
+            if (!response.ok) throw new Error('Failed to load annotations');
+            
+            const data = await response.json();
+            this.allAnnotations = data.annotations || [];
+            console.log('[Annotations] Loaded', this.allAnnotations.length, 'total annotations');
+        } catch (error) {
+            console.error('[Annotations] Load all error:', error);
+            this.allAnnotations = [];
+        }
+    },
+    
+    // Render a single highlight in the DOM
+    renderHighlight(annotation) {
+        const chapterContent = document.getElementById('chapterContent');
+        if (!chapterContent) return;
+        
+        try {
+            // Create a tree walker to find text nodes
+            const walker = document.createTreeWalker(
+                chapterContent,
+                NodeFilter.SHOW_TEXT,
+                null,
+                false
+            );
+            
+            let currentOffset = 0;
+            let startNode = null, endNode = null;
+            let startNodeOffset = 0, endNodeOffset = 0;
+            
+            // Find the start and end nodes
+            while (walker.nextNode()) {
+                const node = walker.currentNode;
+                const nodeLength = node.textContent.length;
+                
+                // Check if start is in this node
+                if (!startNode && currentOffset + nodeLength > annotation.startOffset) {
+                    startNode = node;
+                    startNodeOffset = annotation.startOffset - currentOffset;
+                }
+                
+                // Check if end is in this node
+                if (startNode && currentOffset + nodeLength >= annotation.endOffset) {
+                    endNode = node;
+                    endNodeOffset = annotation.endOffset - currentOffset;
+                    break;
+                }
+                
+                currentOffset += nodeLength;
+            }
+            
+            if (!startNode || !endNode) {
+                console.warn('[Annotations] Could not find text nodes for annotation');
+                return;
+            }
+            
+            // Create a range and wrap with highlight span
+            const range = document.createRange();
+            range.setStart(startNode, startNodeOffset);
+            range.setEnd(endNode, endNodeOffset);
+            
+            // Check if the selected text roughly matches
+            const rangeText = range.toString();
+            if (rangeText.length < annotation.selectedText.length * 0.5) {
+                console.warn('[Annotations] Text mismatch, skipping highlight');
+                return;
+            }
+            
+            // Create highlight wrapper
+            const highlight = document.createElement('mark');
+            highlight.className = `annotation-highlight annotation-${annotation.color}`;
+            highlight.dataset.annotationId = annotation.id;
+            highlight.title = annotation.note || annotation.selectedText.substring(0, 50) + '...';
+            
+            // Add click handler to show annotation details
+            highlight.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.showAnnotationDetails(annotation);
+            });
+            
+            range.surroundContents(highlight);
+            
+        } catch (e) {
+            console.warn('[Annotations] Error rendering highlight:', e);
+        }
+    },
+    
+    // Render all highlights for current chapter
+    renderAllHighlights() {
+        // Sort by start offset descending to avoid offset shifting issues
+        const sorted = [...this.annotations].sort((a, b) => b.startOffset - a.startOffset);
+        
+        for (const annotation of sorted) {
+            this.renderHighlight(annotation);
+        }
+    },
+    
+    // Clear all rendered highlights (before re-rendering)
+    clearRenderedHighlights() {
+        const highlights = document.querySelectorAll('.annotation-highlight');
+        highlights.forEach(el => {
+            const parent = el.parentNode;
+            while (el.firstChild) {
+                parent.insertBefore(el.firstChild, el);
+            }
+            parent.removeChild(el);
+        });
+    },
+    
+    // Show annotation details popup/modal
+    showAnnotationDetails(annotation) {
+        // Create a mini-modal for annotation details
+        const existing = document.querySelector('.annotation-detail-popup');
+        if (existing) existing.remove();
+        
+        const popup = document.createElement('div');
+        popup.className = 'annotation-detail-popup';
+        popup.innerHTML = `
+            <div class="annotation-detail-content">
+                <div class="annotation-detail-header">
+                    <span class="annotation-detail-color" style="background: ${this.colors[annotation.color]?.bg || this.colors.yellow.bg}"></span>
+                    <span class="annotation-detail-date">${new Date(annotation.createdAt).toLocaleDateString()}</span>
+                    <button class="annotation-detail-close">&times;</button>
+                </div>
+                <div class="annotation-detail-text">"${escapeHtml(annotation.selectedText)}"</div>
+                ${annotation.note ? `<div class="annotation-detail-note">${escapeHtml(annotation.note)}</div>` : ''}
+                <div class="annotation-detail-actions">
+                    <button class="annotation-edit-btn">Edit Note</button>
+                    <button class="annotation-delete-btn">Delete</button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(popup);
+        
+        // Position near the highlight
+        const highlight = document.querySelector(`[data-annotation-id="${annotation.id}"]`);
+        if (highlight) {
+            const rect = highlight.getBoundingClientRect();
+            popup.style.top = (rect.bottom + window.scrollY + 10) + 'px';
+            popup.style.left = Math.max(20, rect.left) + 'px';
+        }
+        
+        // Event handlers
+        popup.querySelector('.annotation-detail-close').onclick = () => popup.remove();
+        popup.querySelector('.annotation-edit-btn').onclick = () => {
+            popup.remove();
+            this.editAnnotationNote(annotation);
+        };
+        popup.querySelector('.annotation-delete-btn').onclick = () => {
+            popup.remove();
+            this.deleteAnnotation(annotation);
+        };
+        
+        // Close on outside click
+        setTimeout(() => {
+            document.addEventListener('click', function closePopup(e) {
+                if (!popup.contains(e.target)) {
+                    popup.remove();
+                    document.removeEventListener('click', closePopup);
+                }
+            });
+        }, 100);
+    },
+    
+    // Edit annotation note
+    async editAnnotationNote(annotation) {
+        const newNote = prompt('Edit note:', annotation.note || '');
+        if (newNote === null) return;
+        
+        try {
+            const response = await fetch(
+                `${PROXY_BASE}/library/${currentLibraryEntry.id}/annotations/${annotation.id}`,
+                {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authClient.getToken()}`
+                    },
+                    body: JSON.stringify({ note: newNote })
+                }
+            );
+            
+            if (response.ok) {
+                annotation.note = newNote;
+                // Update tooltip
+                const highlight = document.querySelector(`[data-annotation-id="${annotation.id}"]`);
+                if (highlight) {
+                    highlight.title = newNote || annotation.selectedText.substring(0, 50) + '...';
+                }
+                this.updateAnnotationPanel();
+            }
+        } catch (error) {
+            console.error('[Annotations] Edit error:', error);
+        }
+    },
+    
+    // Delete annotation
+    async deleteAnnotation(annotation) {
+        if (!confirm('Delete this highlight?')) return;
+        
+        try {
+            const response = await fetch(
+                `${PROXY_BASE}/library/${currentLibraryEntry.id}/annotations/${annotation.id}`,
+                {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${authClient.getToken()}`
+                    }
+                }
+            );
+            
+            if (response.ok) {
+                // Remove from local arrays
+                this.annotations = this.annotations.filter(a => a.id !== annotation.id);
+                this.allAnnotations = this.allAnnotations.filter(a => a.id !== annotation.id);
+                
+                // Remove from DOM
+                const highlight = document.querySelector(`[data-annotation-id="${annotation.id}"]`);
+                if (highlight) {
+                    const parent = highlight.parentNode;
+                    while (highlight.firstChild) {
+                        parent.insertBefore(highlight.firstChild, highlight);
+                    }
+                    parent.removeChild(highlight);
+                }
+                
+                this.updateAnnotationPanel();
+            }
+        } catch (error) {
+            console.error('[Annotations] Delete error:', error);
+        }
+    },
+    
+    // Set up the annotations panel/sidebar
+    setupAnnotationPanel() {
+        // Panel will be created in HTML
+    },
+    
+    // Update the annotations panel content
+    updateAnnotationPanel() {
+        const panel = document.getElementById('annotationsPanel');
+        const list = document.getElementById('annotationsList');
+        const count = document.getElementById('annotationsCount');
+        const badge = document.getElementById('annotationsBadge');
+        
+        if (!panel || !list) return;
+        
+        const annotationCount = this.annotations.length;
+        
+        // Update count in panel header
+        if (count) {
+            count.textContent = annotationCount;
+        }
+        
+        // Update floating badge
+        if (badge) {
+            if (annotationCount > 0) {
+                badge.textContent = annotationCount;
+                badge.style.display = 'flex';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+        
+        if (annotationCount === 0) {
+            list.innerHTML = '<p class="annotations-empty">No highlights in this chapter. Select text to highlight.</p>';
+            return;
+        }
+        
+        list.innerHTML = this.annotations.map(a => `
+            <div class="annotation-list-item" data-annotation-id="${a.id}">
+                <div class="annotation-list-color" style="background: ${this.colors[a.color]?.bg || this.colors.yellow.bg}"></div>
+                <div class="annotation-list-content">
+                    <div class="annotation-list-text">"${escapeHtml(a.selectedText.substring(0, 80))}${a.selectedText.length > 80 ? '...' : ''}"</div>
+                    ${a.note ? `<div class="annotation-list-note">${escapeHtml(a.note)}</div>` : ''}
+                </div>
+            </div>
+        `).join('');
+        
+        // Add click handlers to scroll to highlight
+        list.querySelectorAll('.annotation-list-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const id = item.dataset.annotationId;
+                const highlight = document.querySelector(`[data-annotation-id="${id}"]`);
+                if (highlight) {
+                    highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    highlight.classList.add('annotation-flash');
+                    setTimeout(() => highlight.classList.remove('annotation-flash'), 1000);
+                }
+            });
+        });
+    },
+    
+    // Toggle annotations panel visibility
+    togglePanel() {
+        const panel = document.getElementById('annotationsPanel');
+        if (panel) {
+            panel.classList.toggle('open');
+        }
+    }
+};
+
+// Initialize annotations when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    annotationManager.init();
+});
+
+// Load annotations when chapter loads (hook into displayChapter)
+const originalDisplayChapter = displayChapter;
+displayChapter = function(content, chapter) {
+    originalDisplayChapter(content, chapter);
+    
+    // Load annotations for this chapter after a short delay
+    if (currentLibraryEntry) {
+        setTimeout(() => {
+            annotationManager.loadAnnotations();
+        }, 100);
+    }
+};
+
+// ==================== READING PROGRESS SYNC IMPROVEMENTS ====================
+
+const progressSync = {
+    syncInterval: null,
+    lastSyncTime: null,
+    pendingSync: false,
+    syncDebounceTimeout: null,
+    listenersRegistered: false, // Guard to prevent duplicate listeners
+    
+    // Start automatic sync interval
+    startAutoSync() {
+        if (this.syncInterval) return;
+        
+        // Sync every 30 seconds if there are changes
+        this.syncInterval = setInterval(() => {
+            if (this.pendingSync && authClient?.isLoggedIn() && currentLibraryEntry) {
+                this.syncNow();
+            }
+        }, 30000);
+        
+        // Register page lifecycle listeners only once
+        if (!this.listenersRegistered) {
+            this.listenersRegistered = true;
+            
+            // Sync when leaving the page
+            window.addEventListener('beforeunload', () => {
+                if (this.pendingSync) {
+                    this.syncNow(true); // Use keepalive fetch for beforeunload
+                }
+            });
+            
+            // Sync when tab becomes hidden
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden && this.pendingSync) {
+                    this.syncNow();
+                }
+            });
+        }
+        
+        console.log('[ProgressSync] Auto-sync started');
+    },
+    
+    // Stop auto sync
+    stopAutoSync() {
+        if (this.syncInterval) {
+            clearInterval(this.syncInterval);
+            this.syncInterval = null;
+        }
+    },
+    
+    // Mark that we have changes to sync
+    markDirty() {
+        this.pendingSync = true;
+        this.updateSyncIndicator('pending');
+        
+        // Debounce immediate sync
+        if (this.syncDebounceTimeout) {
+            clearTimeout(this.syncDebounceTimeout);
+        }
+        
+        this.syncDebounceTimeout = setTimeout(() => {
+            if (this.pendingSync && authClient?.isLoggedIn() && currentLibraryEntry) {
+                this.syncNow();
+            }
+        }, 5000); // Sync after 5 seconds of no changes
+    },
+    
+    // Perform sync
+    async syncNow(useKeepalive = false) {
+        if (!authClient?.isLoggedIn() || !currentLibraryEntry) return;
+        
+        this.updateSyncIndicator('syncing');
+        
+        try {
+            const chapter = state.chapters[state.currentChapterIndex];
+            if (!chapter) return;
+            
+            const scrollPos = state.currentScrollPosition || 0;
+            
+            const syncData = {
+                chapterIndex: state.currentChapterIndex,
+                chapterTitle: chapter.title,
+                chapterUrl: chapter.url,
+                scrollPosition: scrollPos
+            };
+            
+            // Use fetch with keepalive for beforeunload (works with auth headers)
+            // sendBeacon cannot send Authorization headers, so we use keepalive fetch instead
+            await fetch(`${PROXY_BASE}/library/${currentLibraryEntry.id}/progress`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authClient.getToken()}`
+                },
+                body: JSON.stringify(syncData),
+                keepalive: useKeepalive // Allows request to outlive the page
+            });
+            
+            this.pendingSync = false;
+            this.lastSyncTime = new Date();
+            this.updateSyncIndicator('synced');
+            console.log('[ProgressSync] Synced successfully');
+            
+        } catch (error) {
+            console.error('[ProgressSync] Sync failed:', error);
+            this.updateSyncIndicator('error');
+        }
+    },
+    
+    // Update the sync status indicator
+    updateSyncIndicator(status) {
+        const indicator = document.getElementById('syncIndicator');
+        if (!indicator) return;
+        
+        indicator.className = 'sync-indicator sync-' + status;
+        
+        switch (status) {
+            case 'syncing':
+                indicator.innerHTML = '<span class="sync-icon">&#8635;</span> Syncing...';
+                break;
+            case 'synced':
+                indicator.innerHTML = '<span class="sync-icon">&#10003;</span> Synced';
+                // Hide after 2 seconds
+                setTimeout(() => {
+                    if (indicator.classList.contains('sync-synced')) {
+                        indicator.innerHTML = '';
+                    }
+                }, 2000);
+                break;
+            case 'pending':
+                indicator.innerHTML = '<span class="sync-icon">&#9679;</span>';
+                break;
+            case 'error':
+                indicator.innerHTML = '<span class="sync-icon">&#10007;</span> Sync failed';
+                break;
+        }
+    }
+};
+
+// Start progress sync when authenticated
+document.addEventListener('DOMContentLoaded', () => {
+    if (window.authClient) {
+        authClient.onAuthChange((user, isLoggedIn) => {
+            if (isLoggedIn) {
+                progressSync.startAutoSync();
+            } else {
+                progressSync.stopAutoSync();
+            }
+        });
+        
+        if (authClient.isLoggedIn()) {
+            progressSync.startAutoSync();
+        }
+    }
+});
+
+// Export for use in saveScrollPositionDebounced
+window.progressSync = progressSync;
