@@ -816,6 +816,98 @@
             opacity: 0.6;
         }
 
+        /* Auto-play toggle control */
+        .tts-autoplay-control {
+            display: flex;
+            align-items: center;
+            margin-left: 0.5rem;
+            padding-left: 0.5rem;
+            border-left: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .tts-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .tts-toggle input {
+            display: none;
+        }
+
+        .tts-toggle-slider {
+            width: 36px;
+            height: 20px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 10px;
+            position: relative;
+            transition: background 0.2s;
+        }
+
+        .tts-toggle-slider::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: transform 0.2s;
+        }
+
+        .tts-toggle input:checked + .tts-toggle-slider {
+            background: rgba(255, 255, 255, 0.8);
+        }
+
+        .tts-toggle input:checked + .tts-toggle-slider::after {
+            transform: translateX(16px);
+            background: #667eea;
+        }
+
+        .tts-toggle-label {
+            color: white;
+            font-size: 0.8rem;
+            white-space: nowrap;
+        }
+
+        /* TTS Text Highlighting */
+        .tts-sentence {
+            transition: background-color 0.2s, color 0.2s;
+            border-radius: 2px;
+            padding: 0 2px;
+            margin: 0 -2px;
+        }
+
+        .tts-sentence.tts-current-sentence {
+            background: linear-gradient(120deg, rgba(255, 215, 0, 0.4) 0%, rgba(255, 165, 0, 0.4) 100%);
+            color: var(--text-dark);
+        }
+
+        [data-theme="dark"] .tts-sentence.tts-current-sentence {
+            background: linear-gradient(120deg, rgba(255, 215, 0, 0.3) 0%, rgba(255, 165, 0, 0.3) 100%);
+        }
+
+        .tts-sentence.tts-read-sentence {
+            opacity: 0.6;
+        }
+
+        /* Seekbar styles - make it clickable */
+        .tts-progress-bar {
+            cursor: pointer;
+            position: relative;
+        }
+
+        .tts-progress-bar:hover {
+            height: 8px;
+        }
+
+        .tts-progress-bar:hover .tts-progress-fill {
+            height: 8px;
+        }
+
         .settings-btn {
             background: none;
             border: none;
@@ -1540,6 +1632,13 @@
                     <button class="tts-btn tts-btn-icon tts-help-btn" onclick="showKeyboardShortcutsHelp()" title="Keyboard shortcuts (?)">
                         <span>⌨</span>
                     </button>
+                    <div class="tts-autoplay-control">
+                        <label class="tts-toggle" title="Auto-play next chapter when current finishes">
+                            <input type="checkbox" id="ttsAutoplayNext" onchange="ttsManager.setAutoplayNext(this.checked)">
+                            <span class="tts-toggle-slider"></span>
+                            <span class="tts-toggle-label">Auto-next</span>
+                        </label>
+                    </div>
                 </div>
                 <div class="tts-progress" id="ttsProgress">
                     <div class="tts-progress-bar">

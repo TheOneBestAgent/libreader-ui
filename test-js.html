@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>JS Test</title>
+</head>
+<body>
+    <h1>JavaScript Loading Test</h1>
+    <div id="test1">Test 1: Loading...</div>
+    <div id="test2">Test 2: Loading...</div>
+    <div id="test3">Test 3: Loading...</div>
+
+    <script src="tts-client.js"></script>
+    <script src="app.js"></script>
+    <script>
+        setTimeout(() => {
+            document.getElementById('test1').innerHTML = 
+                typeof loadLatestNovels !== 'undefined' 
+                ? '<span style="color:green">✅ loadLatestNovels exists</span>' 
+                : '<span style="color:red">❌ loadLatestNovels missing</span>';
+
+            document.getElementById('test2').innerHTML = 
+                typeof searchNovels !== 'undefined' 
+                ? '<span style="color:green">✅ searchNovels exists</span>' 
+                : '<span style="color:red">❌ searchNovels missing</span>';
+
+            document.getElementById('test3').innerHTML = 
+                typeof TTSManager !== 'undefined' 
+                ? '<span style="color:green">✅ TTSManager exists</span>' 
+                : '<span style="color:red">❌ TTSManager missing</span>';
+        }, 500);
+    </script>
+</body>
+</html>

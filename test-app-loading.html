@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Test</title>
+</head>
+<body>
+    <h1>Testing App.js Loading</h1>
+    <div id="test"></div>
+    
+    <script src="app.js"></script>
+    <script>
+    setTimeout(() => {
+        const testDiv = document.getElementById('test');
+        if (typeof loadLatestNovels === 'function') {
+            testDiv.innerHTML = '<p style="color:green">✅ app.js loaded successfully!</p>';
+            testDiv.innerHTML += '<p>Click "Latest Novels" to load novels</p>';
+        } else {
+            testDiv.innerHTML = '<p style="color:red">❌ app.js failed to load</p>';
+        }
+    }, 100);
+    </script>
+</body>
+</html>

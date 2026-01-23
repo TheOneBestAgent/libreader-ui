@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Button Debug Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 2rem; background: #f5f5f5; }
+        .test-section { background: white; padding: 1.5rem; margin-bottom: 1rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        button { padding: 0.5rem 1rem; margin: 0.5rem; cursor: pointer; }
+        .success { color: green; font-weight: bold; }
+        .error { color: red; font-weight: bold; }
+        .info { color: blue; }
+        pre { background: #f0f0f0; padding: 1rem; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Button Debug Test</h1>
+    
+    <div class="test-section">
+        <h2>Test 1: Function Availability</h2>
+        <div id="test1-results">Checking...</div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 2: API Connection</h2>
+        <button onclick="testAPI()">Test API Call</button>
+        <div id="test2-results"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 3: Button Click Handlers</h2>
+        <button onclick="testShowMainContent()">Test showMainContent()</button>
+        <button onclick="testLoadNovels()">Test loadLatestNovels()</button>
+        <div id="test3-results"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 4: Element Visibility</h2>
+        <button onclick="checkElements()">Check Elements</button>
+        <div id="test4-results"></div>
+    </div>
+
+    <!-- Load the actual scripts -->
+    <script src="tts-client.js"></script>
+    <script src="app.js"></script>
+    
+    <script>
+        // Test 1: Check if functions exist
+        setTimeout(() => {
+            const results = [];
+            
+            if (typeof loadLatestNovels === 'function') {
+                results.push('<div class="success">✅ loadLatestNovels exists</div>');
+            } else {
+                results.push('<div class="error">❌ loadLatestNovels missing</div>');
+            }
+            
+            if (typeof searchNovels === 'function') {
+                results.push('<div class="success">✅ searchNovels exists</div>');
+            } else {
+                results.push('<div class="error">❌ searchNovels missing</div>');
+            }
+            
+            if (typeof showMainContent === 'function') {
+                results.push('<div class="success">✅ showMainContent exists</div>');
+            } else {
+                results.push('<div class="error">❌ showMainContent missing</div>');
+            }
+            
+            if (typeof showHome === 'function') {
+                results.push('<div class="success">✅ showHome exists</div>');
+            } else {
+                results.push('<div class="error">❌ showHome missing</div>');
+            }
+            
+            if (typeof TTSManager !== 'undefined') {
+                results.push('<div class="success">✅ TTSManager exists</div>');
+            } else {
+                results.push('<div class="error">❌ TTSManager missing</div>');
+            }
+            
+            document.getElementById('test1-results').innerHTML = results.join('');
+        }, 500);
+
+        // Test 2: API Connection
+        async function testAPI() {
+            const results = document.getElementById('test2-results');
+            results.innerHTML = '<div class="info">Testing...</div>';
+            
+            try {
+                const response = await fetch('/api/search?q=https://libread.com/sort/latest-release/1');
+                const html = await response.text();
+                const novelCount = (html.match(/class="tit"/g) || []).length;
+                
+                results.innerHTML = '<div class="success">✅ API responded! Found ' + novelCount + ' novels</div>';
+            } catch (error) {
+                results.innerHTML = '<div class="error">❌ API Error: ' + error.message + '</div>';
+            }
+        }
+
+        // Test 3: Button Handlers
+        function testShowMainContent() {
+            const results = document.getElementById('test3-results');
+            
+            if (typeof showMainContent === 'function') {
+                showMainContent();
+                results.innerHTML = '<div class="success">✅ showMainContent() called - check main page</div>';
+            } else {
+                results.innerHTML = '<div class="error">❌ showMainContent not available</div>';
+            }
+        }
+
+        async function testLoadNovels() {
+            const results = document.getElementById('test3-results');
+            results.innerHTML = '<div class="info">Loading novels...</div>';
+            
+            if (typeof loadLatestNovels === 'function') {
+                try {
+                    await loadLatestNovels();
+                    results.innerHTML = '<div class="success">✅ loadLatestNovels() completed - check main page</div>';
+                } catch (error) {
+                    results.innerHTML = '<div class="error">❌ Error: ' + error.message + '</div>';
+                }
+            } else {
+                results.innerHTML = '<div class="error">❌ loadLatestNovels not available</div>';
+            }
+        }
+
+        // Test 4: Element Visibility
+        function checkElements() {
+            const results = [];
+            
+            const welcomeView = document.getElementById('welcomeView');
+            const mainContent = document.getElementById('mainContent');
+            
+            results.push('<div>welcomeView: ' + (welcomeView ? 'exists' : 'missing') + 
+                        (welcomeView ? ' - display: ' + window.getComputedStyle(welcomeView).display : '') + '</div>');
+            
+            results.push('<div>mainContent: ' + (mainContent ? 'exists' : 'missing') + 
+                        (mainContent ? ' - display: ' + window.getComputedStyle(mainContent).display : '') + '</div>');
+            
+            document.getElementById('test4-results').innerHTML = results.join('');
+        }
+    </script>
+</body>
+</html>

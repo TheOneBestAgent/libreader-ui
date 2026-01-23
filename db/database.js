@@ -104,12 +104,38 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
     FOREIGN KEY (library_id) REFERENCES library(id) ON DELETE CASCADE
 );
 
+-- Annotations (highlights, notes) within chapters
+CREATE TABLE IF NOT EXISTS annotations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    library_id TEXT NOT NULL,
+    chapter_index INTEGER NOT NULL,
+    chapter_url TEXT,
+    type TEXT DEFAULT 'highlight' CHECK(type IN ('highlight', 'note', 'underline')),
+    color TEXT DEFAULT 'yellow',
+    selected_text TEXT NOT NULL,
+    note TEXT,
+    -- Position tracking using character offsets within chapter content
+    start_offset INTEGER NOT NULL,
+    end_offset INTEGER NOT NULL,
+    -- For paragraph-based positioning (more reliable across content changes)
+    paragraph_index INTEGER,
+    paragraph_text_preview TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    synced_at DATETIME,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (library_id) REFERENCES library(id) ON DELETE CASCADE
+);
+
 -- Create indexes for performance
 CREATE INDEX IF NOT EXISTS idx_library_user ON library(user_id);
 CREATE INDEX IF NOT EXISTS idx_library_status ON library(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_progress_user ON reading_progress(user_id);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(user_id);
 CREATE INDEX IF NOT EXISTS idx_stats_user_date ON reading_stats(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_annotations_user ON annotations(user_id);
+CREATE INDEX IF NOT EXISTS idx_annotations_library ON annotations(library_id, chapter_index);
 `;
 
 // Run schema initialization

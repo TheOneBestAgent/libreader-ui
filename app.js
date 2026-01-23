@@ -304,6 +304,15 @@ const ttsManager = {
     
     // Timing stats for debugging
     timingStats: null,
+    
+    // Text highlighting and progress tracking
+    textChunks: [],               // Array of text chunks that match segments
+    currentChunkIndex: -1,        // Currently playing chunk
+    segmentStartTime: 0,          // When current segment started playing
+    segmentDuration: 0,           // Duration of current segment
+    progressUpdateInterval: null, // Interval for updating seekbar
+    autoplayNext: false,          // Auto-play next chapter when done
+    originalText: '',             // Store original chapter text
 
     init() {
         if (typeof TTSClient !== 'undefined') {
@@ -315,7 +324,260 @@ const ttsManager = {
         
         // Don't create AudioContext until user interaction (browser autoplay policy)
         // Will be created on first play()
+        
+        // Load autoplay preference
+        this.loadAutoplayFromSettings();
+        
+        // Set up seekbar click handler
+        this.setupSeekbar();
+        
         console.log('[TTS] Manager initialized (Web Audio API mode)');
+    },
+    
+    // Set up clickable seekbar for seeking within audio
+    setupSeekbar() {
+        document.addEventListener('click', (e) => {
+            const progressBar = e.target.closest('.tts-progress-bar');
+            if (!progressBar) return;
+            
+            if (!this.isStreaming || !this.isPlaying) return;
+            if (this.segmentDuration <= 0) return;
+            
+            const rect = progressBar.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const percent = clickX / rect.width;
+            
+            console.log('[TTS] Seekbar clicked at', Math.round(percent * 100) + '%');
+            
+            // For now, seeking within a single audio segment isn't supported
+            // Would need to re-fetch and decode from a specific time offset
+            // Show a message instead
+            this.updateStatus('Seeking not supported - use skip buttons');
+            setTimeout(() => {
+                if (this.isPlaying) {
+                    this.updateStatus('Playing...');
+                }
+            }, 2000);
+        });
+    },
+    
+    // Load autoplay preference from localStorage
+    loadAutoplayFromSettings() {
+        try {
+            const saved = localStorage.getItem('ttsAutoplayNext');
+            this.autoplayNext = saved === 'true';
+            const checkbox = document.getElementById('ttsAutoplayNext');
+            if (checkbox) checkbox.checked = this.autoplayNext;
+        } catch (error) {
+            console.warn('[TTS] Failed to load autoplay setting:', error);
+        }
+    },
+    
+    // Set autoplay next chapter
+    setAutoplayNext(enabled) {
+        this.autoplayNext = enabled;
+        try {
+            localStorage.setItem('ttsAutoplayNext', enabled ? 'true' : 'false');
+        } catch (error) {
+            console.warn('[TTS] Failed to save autoplay setting:', error);
+        }
+        console.log('[TTS] Auto-play next chapter:', enabled ? 'enabled' : 'disabled');
+    },
+    
+    // Set up text highlighting - mark paragraphs for highlighting
+    setupTextHighlighting(text) {
+        const chapterContent = document.getElementById('chapterContent');
+        if (!chapterContent) return;
+        
+        // Get all paragraphs
+        const paragraphs = chapterContent.querySelectorAll('p');
+        
+        if (paragraphs.length > 0) {
+            // Simply index each paragraph for highlighting
+            // Progress through the audio will estimate which paragraph we're on
+            this.textChunks = [];
+            
+            paragraphs.forEach((p, pIndex) => {
+                p.classList.add('tts-sentence');
+                p.setAttribute('data-tts-chunk', pIndex.toString());
+                this.textChunks.push(p.innerText || '');
+            });
+            
+            console.log('[TTS] Set up highlighting for', paragraphs.length, 'paragraphs');
+        } else {
+            // No paragraphs - treat whole content as single block
+            this.textChunks = [text];
+            const wrapper = document.createElement('div');
+            wrapper.className = 'tts-sentence';
+            wrapper.setAttribute('data-tts-chunk', '0');
+            wrapper.innerHTML = chapterContent.innerHTML;
+            chapterContent.innerHTML = '';
+            chapterContent.appendChild(wrapper);
+            console.log('[TTS] Set up highlighting: single block');
+        }
+        
+        this.currentChunkIndex = -1;
+    },
+    
+    
+    // Update text highlighting for current paragraph
+    updateHighlighting(paragraphIndex) {
+        const chapterContent = document.getElementById('chapterContent');
+        if (!chapterContent) return;
+        
+        // Get all highlighted elements
+        const allSentences = chapterContent.querySelectorAll('.tts-sentence');
+        if (allSentences.length === 0) return;
+        
+        // Only update if paragraph changed
+        if (paragraphIndex === this.currentChunkIndex) return;
+        
+        // Track current element for scrolling
+        let currentElement = null;
+        
+        // Apply highlighting to all paragraphs
+        allSentences.forEach(el => {
+            const elIndex = parseInt(el.getAttribute('data-tts-chunk') || '0');
+            
+            // Remove old classes
+            el.classList.remove('tts-current-sentence', 'tts-read-sentence');
+            
+            // Apply new classes
+            if (elIndex < paragraphIndex) {
+                el.classList.add('tts-read-sentence');
+            } else if (elIndex === paragraphIndex) {
+                el.classList.add('tts-current-sentence');
+                currentElement = el;
+            }
+        });
+        
+        // Update tracking
+        this.currentChunkIndex = paragraphIndex;
+        
+        // Auto-scroll to current paragraph
+        if (currentElement) {
+            this.scrollToCurrentChunk(currentElement);
+        }
+    },
+    
+    // Scroll to the currently highlighted chunk
+    scrollToCurrentChunk(element) {
+        const currentEl = element || document.querySelector('.tts-current-sentence');
+        if (!currentEl) return;
+        
+        // Get the element's position relative to the viewport
+        const rect = currentEl.getBoundingClientRect();
+        const viewportHeight = window.innerHeight;
+        
+        // Scroll if element is not in the middle 40% of the viewport
+        const topThreshold = viewportHeight * 0.3;
+        const bottomThreshold = viewportHeight * 0.6;
+        
+        if (rect.top < topThreshold || rect.top > bottomThreshold) {
+            // Calculate target scroll position to put element in upper third
+            const elementTop = rect.top + window.scrollY;
+            const targetScroll = elementTop - (viewportHeight * 0.25);
+            
+            window.scrollTo({
+                top: Math.max(0, targetScroll),
+                behavior: 'smooth'
+            });
+        }
+    },
+    
+    // Clear text highlighting
+    clearHighlighting() {
+        const chapterContent = document.getElementById('chapterContent');
+        if (!chapterContent) return;
+        
+        const allSentences = chapterContent.querySelectorAll('.tts-sentence');
+        allSentences.forEach(el => {
+            el.classList.remove('tts-current-sentence', 'tts-read-sentence');
+        });
+        
+        this.currentChunkIndex = -1;
+    },
+    
+    // Start progress tracking interval
+    startProgressTracking() {
+        this.stopProgressTracking();
+        
+        this.progressUpdateInterval = setInterval(() => {
+            this.updatePlaybackProgress();
+        }, 100); // Update every 100ms for smooth seekbar
+    },
+    
+    // Stop progress tracking interval
+    stopProgressTracking() {
+        if (this.progressUpdateInterval) {
+            clearInterval(this.progressUpdateInterval);
+            this.progressUpdateInterval = null;
+        }
+    },
+    
+    // Update playback progress (seekbar and highlighting)
+    updatePlaybackProgress() {
+        if (!this.isStreaming || !this.isPlaying) return;
+        if (!this.audioContext) return;
+        
+        // Calculate progress within current audio
+        let progress = 0;
+        let timeRemaining = 0;
+        
+        if (this.scheduledSources.length > 0 && this.segmentDuration > 0) {
+            const now = this.audioContext.currentTime;
+            timeRemaining = Math.max(0, this.nextScheduledTime - now);
+            const elapsed = this.segmentDuration - timeRemaining;
+            progress = (elapsed / this.segmentDuration) * 100;
+            progress = Math.max(0, Math.min(100, progress));
+        }
+        
+        // Update seekbar
+        const fillEl = document.getElementById('ttsProgressFill');
+        if (fillEl) {
+            fillEl.style.width = progress + '%';
+        }
+        
+        // Update text with time remaining
+        const textEl = document.getElementById('ttsProgressText');
+        if (textEl) {
+            const remaining = timeRemaining / this.speed;
+            if (remaining > 60) {
+                const mins = Math.floor(remaining / 60);
+                const secs = Math.round(remaining % 60);
+                textEl.textContent = `${Math.round(progress)}% - ${mins}m ${secs}s remaining`;
+            } else if (remaining > 0) {
+                textEl.textContent = `${Math.round(progress)}% - ${Math.round(remaining)}s remaining`;
+            } else {
+                textEl.textContent = `${Math.round(progress)}% complete`;
+            }
+        }
+        
+        // Update highlighting based on progress through text
+        // For single-segment playback, estimate which paragraph we're on based on time
+        if (this.textChunks && this.textChunks.length > 0) {
+            const totalParagraphs = this.textChunks.length;
+            const estimatedParagraph = Math.floor((progress / 100) * totalParagraphs);
+            const clampedParagraph = Math.max(0, Math.min(estimatedParagraph, totalParagraphs - 1));
+            this.updateHighlighting(clampedParagraph);
+        }
+    },
+    
+    // Estimate remaining playback time (kept for compatibility)
+    estimateRemainingTime(currentSegmentProgress = 0) {
+        if (this.segmentDuration <= 0) return null;
+        
+        const remaining = this.segmentDuration * (1 - currentSegmentProgress) / this.speed;
+        
+        if (remaining <= 0) return null;
+        
+        if (remaining < 60) {
+            return `${Math.round(remaining)}s`;
+        } else {
+            const minutes = Math.floor(remaining / 60);
+            const seconds = Math.round(remaining % 60);
+            return `${minutes}m ${seconds}s`;
+        }
     },
     
     // Load TTS engine preference from settings
@@ -440,6 +702,12 @@ const ttsManager = {
         this.preloadedBuffers.clear();
         this.fetchingSegments.clear();
         this.nextScheduledTime = 0;
+        
+        // Reset progress tracking state
+        this.segmentDuration = 0;
+        this.segmentStartTime = 0;
+        this.currentChunkIndex = -1;
+        this.textChunks = [];
     },
     
     // Preprocess text to handle sound effects and special markers
@@ -546,6 +814,13 @@ const ttsManager = {
         // Reset state for new playback
         this.resetStreamingState();
         
+        // Store original text and set up highlighting
+        this.originalText = text;
+        this.setupTextHighlighting(text);
+        
+        // Start progress update interval
+        this.startProgressTracking();
+        
         // Start timing with detailed metrics
         this.timingStats = {
             startTime: performance.now(),
@@ -614,8 +889,8 @@ const ttsManager = {
                 // Track all segments
                 this.segments = segments;
                 
-                // Find newly ready segments
-                const readySegments = segments.filter(s => s.status === 'ready');
+                // Find newly ready segments (Piper uses 'ready', Edge-TTS uses 'completed')
+                const readySegments = segments.filter(s => s.status === 'ready' || s.status === 'completed');
                 const progress = segments.length > 0 
                     ? Math.round((readySegments.length / segments.length) * 100) 
                     : 0;
@@ -703,7 +978,6 @@ const ttsManager = {
 
         const poll = async () => {
             if (!this.isStreaming) {
-                console.log('[TTS] Streaming stopped');
                 return;
             }
             
@@ -713,18 +987,12 @@ const ttsManager = {
                 !jobIds.every((id, i) => id === this.currentJobIds[i]);
             
             if (jobIdsChanged) {
-                console.log('[TTS] Job IDs changed, stopping old poll loop');
+                // Job IDs changed - a new playback started, stop this poll loop
                 return;
             }
 
             try {
-                const pollStart = performance.now();
                 const combinedStatus = await this.client.getChunkedJobStatus(jobIds);
-                const pollTime = performance.now() - pollStart;
-                
-                if (pollTime > 500) {
-                    console.log('[TTS] Warning: Slow poll response:', pollTime.toFixed(0), 'ms');
-                }
                 
                 const segments = combinedStatus.segments || [];
                 this.segments = segments;
@@ -741,18 +1009,20 @@ const ttsManager = {
 
                 let newSegmentsQueued = 0;
 
-                // Process segments from each job
-                for (let jobIdx = 0; jobIdx < combinedStatus.job_statuses.length; jobIdx++) {
+                // Process segments from each job IN ORDER
+                // For Edge-TTS: each job = 1 chunk = 1 segment, so jobIdx = chunkIdx = globalIdx
+                // For Piper: each job may have multiple segments
+                for (let jobIdx = 0; jobIdx < jobIds.length; jobIdx++) {
                     const status = combinedStatus.job_statuses[jobIdx];
                     const manifest = status.manifest || status;
                     const jobSegments = manifest.segments || [];
                     const jobId = jobIds[jobIdx];
-                    const baseIdx = jobBaseIndices[jobIdx];
 
-                    // Process ALL segments, queue only ready ones we haven't seen
+                    // Process segments within this job
+                    // Note: Piper uses 'ready', Edge-TTS uses 'completed'
                     for (let segIdx = 0; segIdx < jobSegments.length; segIdx++) {
                         const segment = jobSegments[segIdx];
-                        if (segment.status !== 'ready') continue;
+                        if (segment.status !== 'ready' && segment.status !== 'completed') continue;
                         
                         const segmentId = segment.segment_id || segment.id;
                         
@@ -762,7 +1032,9 @@ const ttsManager = {
                         
                         if (!alreadyQueued && !alreadyPlayed) {
                             const segmentUrl = this.client.getSegmentUrl(jobId, segmentId);
-                            const globalIdx = baseIdx + segIdx;
+                            // For chunked Edge-TTS: jobIdx IS the chunk/segment index
+                            // For Piper with multiple segments per job, use cumulative index
+                            const globalIdx = this.isChunked ? jobIdx : (jobBaseIndices[jobIdx] + segIdx);
                             
                             this.segmentQueue.push({
                                 index: globalIdx,
@@ -773,13 +1045,18 @@ const ttsManager = {
                                 localIndex: segIdx
                             });
                             newSegmentsQueued++;
-                            console.log('[TTS] Queued segment', globalIdx + 1, '(job', jobIdx + 1, ', local', segIdx + 1, ')');
+                            console.log('[TTS] Queued chunk', globalIdx + 1, 'of', jobIds.length, '(job', jobIdx + 1, ')');
                         }
                     }
                 }
                 
-                // Sort queue by global index
+                // Sort queue by global index to ensure correct playback order
                 this.segmentQueue.sort((a, b) => a.index - b.index);
+                
+                // Debug: log queue state if we added segments
+                if (newSegmentsQueued > 0) {
+                    console.log('[TTS] Queue after sort:', this.segmentQueue.map(s => s.index + 1).join(', '));
+                }
 
                 // Log timing for first segment
                 if (this.segmentQueue.length > 0 && !this.timingStats.firstSegmentReady) {
@@ -813,7 +1090,7 @@ const ttsManager = {
 
                 // Calculate overall progress
                 const totalSegments = segments.length;
-                const readySegments = segments.filter(s => s.status === 'ready').length;
+                const readySegments = segments.filter(s => s.status === 'ready' || s.status === 'completed').length;
                 const progress = totalSegments > 0 ? Math.round((readySegments / totalSegments) * 100) : 0;
 
                 // Update UI
@@ -1015,11 +1292,7 @@ const ttsManager = {
         
         // Check if we're done
         if (this.segmentQueue.length === 0 && this.synthesisComplete && this.scheduledSources.length === 0) {
-            this.isPlaying = false;
-            this.isStreaming = false;
-            this.updateStatus('Finished');
-            this.updateUI();
-            console.log('[TTS] Playback complete');
+            this.onPlaybackComplete();
         }
         
         // Preload upcoming segments
@@ -1057,6 +1330,13 @@ const ttsManager = {
         // Calculate when this segment will end
         const duration = audioBuffer.duration / this.speed;
         this.nextScheduledTime = startTime + duration;
+        this.segmentDuration = duration; // Track for progress calculation
+        this.segmentStartTime = startTime;
+        
+        // Update highlighting when segment starts playing
+        if (this.isChunked) {
+            this.updateHighlighting(segment.index);
+        }
         
         console.log('[TTS] Scheduling segment', segment.index + 1, 
             'at', startTime.toFixed(3), 's',
@@ -1101,11 +1381,7 @@ const ttsManager = {
             
             // Check if all done
             if (this.scheduledSources.length === 0 && this.segmentQueue.length === 0 && this.synthesisComplete) {
-                this.isPlaying = false;
-                this.isStreaming = false;
-                this.updateStatus('Finished');
-                this.updateUI();
-                this.printTimingStats();
+                this.onPlaybackComplete();
             }
         };
         
@@ -1158,6 +1434,31 @@ const ttsManager = {
             console.log('Gaps detected: 0 (gapless playback achieved!)');
         }
         console.log('=============================');
+    },
+    
+    // Called when playback completes
+    onPlaybackComplete() {
+        this.isPlaying = false;
+        this.isStreaming = false;
+        this.stopProgressTracking();
+        this.updateStatus('Finished');
+        this.updateUI();
+        this.printTimingStats();
+        console.log('[TTS] Playback complete');
+        
+        // Handle auto-play next chapter
+        if (this.autoplayNext) {
+            console.log('[TTS] Auto-playing next chapter...');
+            this.updateStatus('Loading next chapter...');
+            
+            // Small delay before starting next chapter
+            setTimeout(() => {
+                // Navigate to next chapter and auto-play
+                if (typeof navigateChapter === 'function') {
+                    navigateChapter(1, true); // true = auto-play after load
+                }
+            }, 1500);
+        }
     },
 
     // Legacy method - kept for compatibility but now triggers scheduling
@@ -1214,6 +1515,10 @@ const ttsManager = {
         this.segmentQueue = [];
         this.preloadedBuffers.clear();
         this.nextScheduledTime = 0;
+        
+        // Stop progress tracking and clear highlighting
+        this.stopProgressTracking();
+        this.clearHighlighting();
         
         // Cancel any pending jobs to free up the queue
         if (this.currentJobIds && this.currentJobIds.length > 0 && this.client) {
@@ -1413,7 +1718,7 @@ const ttsManager = {
         // Re-queue segments from target index onwards
         for (let i = targetIndex; i < this.segments.length; i++) {
             const seg = this.segments[i];
-            if (seg.status === 'ready') {
+            if (seg.status === 'ready' || seg.status === 'completed') {
                 const segmentId = seg.segment_id || seg.id;
                 // Determine which job this segment belongs to
                 // _jobId is added by getChunkedJobStatus() in tts-client.js
@@ -1845,7 +2150,7 @@ function extractChapterNumber(url) {
     return match ? parseInt(match[1]) : 0;
 }
 
-async function loadChapter(chapterIndex) {
+async function loadChapter(chapterIndex, autoPlay = false) {
     console.log('=== loadChapter ===', chapterIndex);
     
     if (chapterIndex < 0 || chapterIndex >= state.chapters.length) return;
@@ -1888,6 +2193,15 @@ async function loadChapter(chapterIndex) {
             displayChapter(content, chapter);
             updateChapterNavigation();
             console.log('✓ Chapter loaded');
+            
+            // Auto-play TTS if requested (from auto-next feature)
+            if (autoPlay && ttsManager) {
+                console.log('[TTS] Auto-playing chapter...');
+                // Small delay to let the DOM settle
+                setTimeout(() => {
+                    ttsManager.play();
+                }, 500);
+            }
         } else {
             console.error('Failed - doc is null');
             document.getElementById('chapterContent').innerHTML = '<p style="text-align: center; color: var(--accent-terracotta);">Failed to load chapter</p>';
@@ -2318,10 +2632,10 @@ document.addEventListener('DOMContentLoaded', () => {
     addFontSizeShortcuts();
 });
 
-function navigateChapter(direction) {
+function navigateChapter(direction, autoPlay = false) {
     const newIndex = state.currentChapterIndex + direction;
     if (newIndex >= 0 && newIndex < state.chapters.length) {
-        loadChapter(newIndex);
+        loadChapter(newIndex, autoPlay);
     }
 }
 

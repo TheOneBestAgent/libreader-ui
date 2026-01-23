@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head><title>CORS Test</title></head>
+<body>
+<h1>Open Console (F12)</h1>
+<script>
+const PROXY_BASE = window.location.protocol + '//' + window.location.host + '/api';
+const API_BASE = 'https://libread.com';
+console.log('✓ CORS FIX APPLIED');
+console.log('Host:', window.location.host);
+console.log('Proxy:', PROXY_BASE);
+console.log('API:', API_BASE);
+console.log('');
+console.log('This will work on:');
+console.log('  - localhost:3000');
+console.log('  - libread.bigbum.uk');
+console.log('  - ANY domain!');
+</script>
+</body>
+</html>

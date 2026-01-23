@@ -3,10 +3,11 @@
 // Supports multiple TTS engines with automatic routing
 
 class TTSClient {
-    // Maximum characters per chunk to avoid 413 errors
+    // Maximum characters per chunk to avoid timeouts and processing issues
     // PronounceX API limit is 20000 chars; using 5000 for comfortable margin
-    // Edge-TTS handles longer text but we use same limit for consistency
-    static MAX_CHUNK_SIZE = 5000;
+    // Edge-TTS needs smaller chunks (~1500) to avoid processing timeouts
+    static MAX_CHUNK_SIZE_PIPER = 5000;
+    static MAX_CHUNK_SIZE_EDGE = 1500;
     
     // Available TTS engines
     static ENGINES = {
@@ -43,9 +44,16 @@ class TTSClient {
         return this.engine === TTSClient.ENGINES.PIPER;
     }
 
+    // Get appropriate chunk size for an engine
+    static getMaxChunkSize(engine) {
+        return engine === TTSClient.ENGINES.EDGE 
+            ? TTSClient.MAX_CHUNK_SIZE_EDGE 
+            : TTSClient.MAX_CHUNK_SIZE_PIPER;
+    }
+
     // Split text into chunks at sentence boundaries
-    // Returns array of text chunks, each under MAX_CHUNK_SIZE
-    static chunkText(text, maxSize = TTSClient.MAX_CHUNK_SIZE) {
+    // Returns array of text chunks, each under the max size for the engine
+    static chunkText(text, maxSize = TTSClient.MAX_CHUNK_SIZE_PIPER) {
         if (text.length <= maxSize) {
             return [text];
         }
@@ -170,10 +178,31 @@ class TTSClient {
 
     // Create TTS synthesis jobs for long text, automatically chunking if needed
     // Returns an object with job_ids array and chunk info for coordinated playback
+    // NOTE: Edge-TTS handles long text internally, so we don't chunk for it
     async synthesizeChunked(text, options = {}) {
-        const chunks = TTSClient.chunkText(text);
+        // Edge-TTS: Send full text as single job (no chunking needed)
+        // Edge-TTS handles long text well internally
+        if (this.engine === TTSClient.ENGINES.EDGE) {
+            console.log('[TTS] Edge-TTS: Sending full text as single job,', text.length, 'chars');
+            const result = await this.synthesize(text, options);
+            this.currentJobIds = [result.job_id];
+            return {
+                job_ids: [result.job_id],
+                chunks: [{
+                    index: 0,
+                    job_id: result.job_id,
+                    length: text.length
+                }],
+                total_chunks: 1,
+                is_chunked: false
+            };
+        }
         
-        console.log('[TTS] Synthesizing text in', chunks.length, 'chunk(s), total length:', text.length);
+        // Piper: Use chunking to avoid 413 errors (20KB API limit)
+        const maxChunkSize = TTSClient.MAX_CHUNK_SIZE_PIPER;
+        const chunks = TTSClient.chunkText(text, maxChunkSize);
+        
+        console.log('[TTS] Piper: Synthesizing in', chunks.length, 'chunk(s), total length:', text.length);
         
         // Single chunk - use regular synthesis
         if (chunks.length === 1) {
@@ -310,7 +339,7 @@ class TTSClient {
                     const manifest = status.manifest || status;
                     const segments = manifest.segments || [];
                     if (segments.length > 0) {
-                        const completed = segments.filter(s => s.status === 'ready').length;
+                        const completed = segments.filter(s => s.status === 'ready' || s.status === 'completed').length;
                         progress = Math.round((completed / segments.length) * 100);
                     }
                     
@@ -396,7 +425,11 @@ class TTSClient {
     }
 
     // Get individual segment audio URL
+    // Note: Piper uses /segments/{id}, Edge-TTS uses /segments/{id}/audio
     getSegmentUrl(jobId, segmentId) {
+        if (this.engine === TTSClient.ENGINES.EDGE) {
+            return this.apiBase + '/v1/tts/jobs/' + jobId + '/segments/' + segmentId + '/audio?engine=' + this.engine;
+        }
         return this.apiBase + '/v1/tts/jobs/' + jobId + '/segments/' + segmentId + '?engine=' + this.engine;
     }
 

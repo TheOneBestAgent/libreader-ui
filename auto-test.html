@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Auto Test - Button Functionality</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 2rem; background: #f0f0f0; }
+        .result { padding: 1rem; margin: 1rem 0; border-radius: 8px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+        pre { background: #fff; padding: 1rem; border-radius: 4px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Automated Button Test</h1>
+    <div id="results"></div>
+
+    <script src="tts-client.js"></script>
+    <script src="app.js"></script>
+    <script>
+        const results = document.getElementById('results');
+        
+        function addResult(message, type) {
+            const div = document.createElement('div');
+            div.className = 'result ' + type;
+            div.innerHTML = message;
+            results.appendChild(div);
+        }
+
+        async function runTests() {
+            addResult('Starting tests...', 'info');
+
+            // Test 1: Check functions exist
+            setTimeout(() => {
+                const functions = [
+                    'loadLatestNovels',
+                    'searchNovels', 
+                    'showMainContent',
+                    'showHome',
+                    'toggleTheme'
+                ];
+                
+                let allExist = true;
+                functions.forEach(fn => {
+                    if (typeof window[fn] !== 'function') {
+                        allExist = false;
+                        addResult('❌ Function missing: ' + fn, 'error');
+                    }
+                });
+                
+                if (allExist) {
+                    addResult('✅ All functions defined', 'success');
+                }
+
+                // Test 2: Test showMainContent
+                try {
+                    showMainContent();
+                    addResult('✅ showMainContent() executed without errors', 'success');
+                } catch (error) {
+                    addResult('❌ showMainContent() error: ' + error.message, 'error');
+                }
+
+                // Test 3: Test loadLatestNovels
+                testLoadNovels();
+            }, 500);
+        }
+
+        async function testLoadNovels() {
+            addResult('⏳ Testing loadLatestNovels()...', 'info');
+            
+            try {
+                await loadLatestNovels();
+                addResult('✅ loadLatestNovels() completed successfully', 'success');
+                addResult('✅ Check the main page to see loaded novels', 'success');
+            } catch (error) {
+                addResult('❌ loadLatestNovels() error: ' + error.message, 'error');
+                addResult('<pre>Error: ' + error.stack + '</pre>', 'error');
+            }
+        }
+
+        // Run tests on load
+        runTests();
+    </script>
+</body>
+</html>

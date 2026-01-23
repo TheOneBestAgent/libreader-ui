@@ -1,0 +1,508 @@
+// LibRead Ereader Application
+// Based on QuickNovel's LibReadProvider.kt implementation
+
+const PROXY_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:3001/api'
+    : '/api';
+const API_BASE = 'https://libread.com';
+
+function proxifyImage(imageUrl) {
+    if (!imageUrl) return null;
+    if (imageUrl.includes('/api/image')) return imageUrl;
+    let absoluteUrl = imageUrl;
+    if (!imageUrl.startsWith('http')) {
+        absoluteUrl = imageUrl.startsWith('//') ? 'https:' + imageUrl : (imageUrl.startsWith('/') ? API_BASE + imageUrl : API_BASE + '/' + imageUrl);
+    }
+    return `${PROXY_BASE}/image?url=${encodeURIComponent(absoluteUrl)}`;
+}
+
+const state = {
+    novels: [],
+    currentNovel: null,
+    currentChapter: null,
+    currentChapterIndex: 0,
+    chapters: [],
+    theme: localStorage.getItem('theme') || 'light'
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    initializeTheme();
+    setupEventListeners();
+    console.log('📚 LibRead Ereader initialized (QuickNovel method)');
+});
+
+function initializeTheme() {
+    if (state.theme === 'dark') document.body.setAttribute('data-theme', 'dark');
+}
+
+function toggleTheme() {
+    state.theme = state.theme === 'light' ? 'dark' : 'light';
+    document.body.setAttribute('data-theme', state.theme);
+    localStorage.setItem('theme', state.theme);
+}
+
+function setupEventListeners() {
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) {
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') searchNovels();
+        });
+    }
+}
+
+async function fetchFromAPI(endpoint, options = {}) {
+    try {
+        const useProxy = window.location.hostname === 'localhost';
+        let url;
+        if (useProxy) {
+            const targetUrl = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
+            if (endpoint.includes('/chapter-') || (endpoint.includes('/lib/') && endpoint.match(/\d+\/[\w-]+$/))) {
+                url = `http://localhost:3001/api/proxy?url=${encodeURIComponent(targetUrl)}`;
+            } else {
+                url = `http://localhost:3001/api/search?q=${encodeURIComponent(targetUrl)}`;
+            }
+        } else {
+            url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
+        }
+        const response = await fetch(url, options);
+        if (!response.ok) throw new Error('Network response was not ok');
+        const html = await response.text();
+        return parseHTML(html);
+    } catch (error) {
+        console.error('API Error:', error);
+        return null;
+    }
+}
+
+async function postToAPI(endpoint, data = {}) {
+    try {
+        const useProxy = window.location.hostname === 'localhost';
+        let url, requestOptions;
+        if (useProxy) {
+            if (endpoint.includes('chapterlist.php')) {
+                url = `${PROXY_BASE}/chapterlist?aid=${data.aid}`;
+                requestOptions = { method: 'GET' };
+            } else if (endpoint.includes('/search')) {
+                const searchQuery = encodeURIComponent(data.searchkey || '');
+                url = `${PROXY_BASE}/search?q=${encodeURIComponent('https://libread.com/search?q=' + searchQuery)}`;
+                requestOptions = { method: 'GET' };
+            } else {
+                url = `${PROXY_BASE}/search?q=${endpoint}`;
+                requestOptions = { method: 'GET' };
+            }
+        } else {
+            const formData = new FormData();
+            Object.keys(data).forEach(key => formData.append(key, data[key]));
+            url = `${API_BASE}${endpoint}`;
+            requestOptions = { method: 'POST', body: formData };
+        }
+        const response = await fetch(url, requestOptions);
+        if (!response.ok) throw new Error('Network response was not ok');
+        return await response.text();
+    } catch (error) {
+        console.error('POST Error:', error);
+        return null;
+    }
+}
+
+function parseHTML(html) {
+    const parser = new DOMParser();
+    return parser.parseFromString(html, 'text/html');
+}
+
+function showHome() {
+    document.getElementById('welcomePage').classList.remove('hidden');
+    document.getElementById('mainContent').classList.remove('active');
+    document.getElementById('novelDetailView').classList.remove('active');
+    state.currentNovel = null;
+}
+
+function showMainContent() {
+    document.getElementById('welcomePage').classList.add('hidden');
+    document.getElementById('mainContent').classList.add('active');
+    document.getElementById('novelDetailView').classList.remove('active');
+}
+
+async function loadLatestNovels() {
+    showMainContent();
+    showLoading();
+    const doc = await fetchFromAPI('/sort/latest-release/1');
+    if (doc) {
+        state.novels = parseNovelsFromPage(doc);
+        displayNovels(state.novels);
+        updateStats();
+    }
+}
+
+async function searchNovels() {
+    const query = document.getElementById('searchInput').value.trim();
+    if (!query) return;
+    showMainContent();
+    showLoading();
+    const html = await postToAPI('/search', { searchkey: query });
+    if (html) {
+        const doc = parseHTML(html);
+        state.novels = parseNovelsFromPage(doc);
+        displayNovels(state.novels);
+    }
+}
+
+function parseNovelsFromPage(doc) {
+    const novels = [];
+    const seenIds = new Set();
+    const novelItems = doc.querySelectorAll('.ul-list1 .li, .ul-list2 .li, .li-row');
+    
+    novelItems.forEach(item => {
+        const titleLink = item.querySelector('h3.tit a, .tit a, .s1 a, a[href*="/lib/"]');
+        if (!titleLink) return;
+        
+        const title = titleLink.getAttribute('title') || titleLink.textContent.trim();
+        const url = titleLink.getAttribute('href');
+        if (!url) return;
+        
+        const novelId = extractNovelId(url);
+        if (seenIds.has(novelId)) return;
+        seenIds.add(novelId);
+        
+        const img = item.querySelector('div.pic a img, .pic img, img');
+        const cover = img ? img.getAttribute('src') : null;
+        
+        const genreLinks = item.querySelectorAll('.s2 a, .right .novel, a[href*="/genre/"]');
+        const genres = Array.from(genreLinks).map(g => g.textContent.trim()).slice(0, 3);
+        
+        novels.push({
+            id: novelId,
+            title,
+            url: url.startsWith('http') ? url : `${API_BASE}${url}`,
+            cover: cover ? (cover.startsWith('http') ? cover : `${API_BASE}${cover}`) : null,
+            genres,
+            rating: 0,
+            chapters: 0
+        });
+    });
+    
+    return novels;
+}
+
+function extractNovelId(url) {
+    const match = url.match(/(\d+)(?:\/|$|\.html)/);
+    return match ? match[1] : url.split('/').pop().replace('.html', '');
+}
+
+async function loadNovelDetails(novelId) {
+    const novel = state.novels.find(n => n.id === novelId);
+    if (!novel) return;
+    
+    state.currentNovel = novel;
+    
+    document.getElementById('welcomePage').classList.add('hidden');
+    document.getElementById('mainContent').classList.remove('active');
+    document.getElementById('novelDetailView').classList.add('active');
+    
+    document.getElementById('novelTitle').textContent = novel.title;
+    document.getElementById('novelMeta').textContent = novel.genres.join(' • ');
+    
+    try {
+        const response = await fetch(novel.url);
+        const html = await response.text();
+        
+        // QuickNovel method: Extract aid from image URL pattern
+        const aidMatch = html.match(/(\d+)s\.jpg/);
+        const aid = aidMatch ? aidMatch[1] : novelId;
+        
+        const chaptersData = await postToAPI('/api/chapterlist.php', { aid });
+        
+        if (chaptersData) {
+            parseChaptersFromAPI(chaptersData, novel);
+        }
+    } catch (error) {
+        console.error('Error loading novel:', error);
+    }
+}
+
+function parseChaptersFromAPI(apiHtml, novel) {
+    console.log('=== parseChaptersFromAPI (QuickNovel method) ===');
+    
+    const chapters = [];
+    const doc = parseHTML(apiHtml);
+    
+    // Try to find chapters in ul-list5 (the actual chapter list on libread.com)
+    const chapterListItems = doc.querySelectorAll('ul.ul-list5 li, .chapter-list a, a[href*="chapter-"]');
+    console.log('Chapter list items found:', chapterListItems.length);
+    
+    if (chapterListItems.length > 0) {
+        // Parse from the visible chapter list
+        chapterListItems.forEach((item, index) => {
+            const link = item.tagName === 'A' ? item : item.querySelector('a');
+            if (!link) return;
+            
+            const href = link.getAttribute('href');
+            const fullTitle = link.textContent.trim();
+            const titleAttr = link.getAttribute('title') || fullTitle;
+            
+            // Clean the title - remove HTML tags and "Chapter X:" prefix
+            let title = titleAttr.replace(/<[^>]*>/g, '').trim();
+            title = title.replace(/^Chapter\s*\d+[:\-\s]*/i, '').trim();
+            title = title.replace(/^C\.?\d+[:\.\-\s]*/i, '').trim();
+            title = title.replace(/\s+/g, ' ').trim();
+            
+            if (!title) title = `Chapter ${index + 1}`;
+            
+            const chapterUrl = href.startsWith('http') ? href : `${API_BASE}${href}`;
+            const chapterNum = extractChapterNumber(chapterUrl);
+            
+            chapters.push({
+                index,
+                number: chapterNum || index + 1,
+                title,
+                url: chapterUrl
+            });
+        });
+    } else {
+        // Fallback: Try to parse from option tags (QuickNovel API method)
+        console.log('No ul-list5 found, trying option tags...');
+        const options = doc.querySelectorAll('option');
+        
+        options.forEach((option, index) => {
+            const value = option.getAttribute('value');
+            let title = option.textContent.trim();
+            
+            // Clean title - remove ALL HTML tags including closing tags
+            title = title.replace(/<\/?[^>]+(>|$)/g, '').trim();
+            title = title.replace(/^Chapter\s*\d+[:\s]*/i, '').trim();
+            title = title.replace(/^C\.?\d+[:\s.]*/i, '').trim();
+            title = title.replace(/\s+/g, ' ').trim();
+            
+            if (!title) title = `Chapter ${index + 1}`;
+            
+            if (value) {
+                const chapterSlug = value.split('/').filter(Boolean).pop();
+                const chapterUrl = `${API_BASE}${value}`;
+                const chapterNum = extractChapterNumber(chapterSlug);
+                
+                chapters.push({
+                    index,
+                    number: chapterNum || index + 1,
+                    title,
+                    url: chapterUrl
+                });
+            }
+        });
+    }
+    
+    state.chapters = chapters.sort((a, b) => a.number - b.number);
+    console.log('Total chapters loaded:', state.chapters.length);
+    
+    displayChapterList();
+    
+    if (state.chapters.length > 0) {
+        loadChapter(0);
+    }
+}
+
+function parseChaptersFromPage(doc, novel) {
+    const chapters = [];
+    const chapterLinks = doc.querySelectorAll('a[href*="chapter-"]');
+    
+    chapterLinks.forEach((link, index) => {
+        const href = link.getAttribute('href');
+        const chapterNum = extractChapterNumber(href);
+        
+        if (chapterNum > 0) {
+            chapters.push({
+                index,
+                number: chapterNum,
+                title: link.textContent.trim() || `Chapter ${chapterNum}`,
+                url: href.startsWith('http') ? href : `${API_BASE}${href}`
+            });
+        }
+    });
+    
+    state.chapters = chapters.sort((a, b) => a.number - b.number);
+    displayChapterList();
+    
+    if (state.chapters.length > 0) {
+        loadChapter(0);
+    }
+}
+
+function extractChapterNumber(url) {
+    const match = url.match(/chapter-?(\d+)/i);
+    return match ? parseInt(match[1]) : 0;
+}
+
+async function loadChapter(chapterIndex) {
+    console.log('=== loadChapter ===', chapterIndex);
+    
+    if (chapterIndex < 0 || chapterIndex >= state.chapters.length) return;
+    
+    state.currentChapterIndex = chapterIndex;
+    const chapter = state.chapters[chapterIndex];
+    
+    console.log('Loading:', chapter.title);
+    console.log('URL:', chapter.url);
+    
+    document.querySelectorAll('.chapter-item').forEach(item => {
+        item.classList.remove('active');
+    });
+    const activeChapterItem = document.querySelector(`.chapter-item[data-index="${chapterIndex}"]`);
+    if (activeChapterItem) {
+        activeChapterItem.classList.add('active');
+    }
+    
+    document.getElementById('chapterContent').innerHTML = '<p style="text-align: center; padding: 2rem;"><div class="loading-spinner"></div><br>Loading chapter...</p>';
+    
+    try {
+        const doc = await fetchFromAPI(chapter.url.replace(API_BASE, ''));
+        
+        if (doc) {
+            const content = parseChapterContent(doc, chapter);
+            displayChapter(content, chapter);
+            updateChapterNavigation();
+            console.log('✓ Chapter loaded');
+        } else {
+            console.error('Failed - doc is null');
+            document.getElementById('chapterContent').innerHTML = '<p style="text-align: center; color: var(--accent-terracotta);">Failed to load chapter</p>';
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        document.getElementById('chapterContent').innerHTML = '<p style="text-align: center; color: var(--accent-terracotta);">Failed to load chapter</p>';
+    }
+}
+
+function parseChapterContent(doc, chapter) {
+    // Try multiple selectors for chapter content
+    // libread.com uses: div.txt
+    // freewebnovel.com uses: div#article
+    let contentElement = doc.querySelector('div#article, div.txt, .chapter-content, #chapter-content, .novel-content, .content, #content, article');
+    
+    if (contentElement) {
+        let content = contentElement.innerHTML;
+        
+        // QuickNovel lines 92-97: Remove obfuscated domain
+        content = content.replace(
+            /\uD835\uDCF5\uD835\uDC8A\uD835\uDC83\uD835\uDE67\uD835\uDE5A\uD835\uDC82\uD835\uDCED.\uD835\uDCEC\uD835\uDE64\uD835\uDE62/g,
+            ''
+        );
+        content = content.replace(/libread\.com/gi, '');
+        content = content.replace(/freewebnovel\.com/gi, '');
+        
+        content = content
+            .replace(/<script[^>]*>.*?<\/script>/gis, '')
+            .replace(/<style[^>]*>.*?<\/style>/gis, '')
+            .replace(/<!--.*?-->/gs, '')
+            .replace(/<div[^>]*style=["'][^"']*text-align:\s*center[^"']*["'][^>]*>.*?<\/div>/gis, '');
+        
+        // Clean up whitespace but preserve paragraph structure
+        content = content.replace(/\s{2,}/g, ' ').replace(/>\s+</g, '><');
+        
+        console.log('Content parsed from selector:', contentElement.tagName + (contentElement.id ? '#' + contentElement.id : ''), 'length:', content.length);
+        return content;
+    }
+    
+    console.log('Content element not found, looking for paragraphs...');
+    
+    // Fallback: Look for paragraphs with substantial content
+    const paragraphs = doc.querySelectorAll('p');
+    if (paragraphs.length > 5) {
+        const validParagraphs = Array.from(paragraphs).filter(p => {
+            const text = p.textContent.trim();
+            return text.length > 20; // Only include meaningful paragraphs
+        });
+        
+        if (validParagraphs.length > 0) {
+            console.log('Found', validParagraphs.length, 'valid paragraphs');
+            return validParagraphs.map(p => {
+                // Preserve any HTML formatting within the paragraph
+                return `<p>${p.innerHTML.trim()}</p>`;
+            }).join('');
+        }
+    }
+    
+    console.log('No content found, document structure:', doc.body?.innerHTML?.substring(0, 500));
+    return '<p>No content available. The chapter may have been moved or requires a different access method.</p>';
+}
+
+function displayNovels(novels) {
+    const grid = document.getElementById('novelGrid');
+    if (!grid) return;
+    
+    if (novels.length === 0) {
+        grid.innerHTML = '<div class="loading"><p>No novels found.</p></div>';
+        return;
+    }
+    
+    grid.innerHTML = novels.map(novel => {
+        const proxifiedCover = proxifyImage(novel.cover);
+        return `
+        <div class="novel-card" onclick="openNovel('${novel.id}')">
+            <img class="novel-cover" 
+                 src="${proxifiedCover || 'https://via.placeholder.com/200x267'}" 
+                 alt="${novel.title}"
+                 onerror="this.src='https://via.placeholder.com/200x267'">
+            <div class="novel-info">
+                <h3 class="novel-title">${novel.title}</h3>
+            </div>
+        </div>
+    `}).join('');
+}
+
+function displayChapterList() {
+    const listContainer = document.getElementById('chapterList');
+    if (!listContainer) return;
+    
+    const displayCount = Math.min(state.chapters.length, 100);
+    const displayChapters = state.chapters.slice(0, displayCount);
+    
+    listContainer.innerHTML = displayChapters.map(chapter => `
+        <div class="chapter-item" data-index="${chapter.index}" onclick="loadChapter(${chapter.index})">
+            <span class="chapter-number">Ch. ${chapter.number}</span>
+            <span class="chapter-title">${chapter.title}</span>
+        </div>
+    `).join('');
+    
+    if (state.chapters.length > displayCount) {
+        listContainer.innerHTML += `<div style="text-align: center; padding: 1rem; color: var(--text-muted);">Showing ${displayCount} of ${state.chapters.length} chapters...</div>`;
+    }
+}
+
+function displayChapter(content, chapter) {
+    const contentDiv = document.getElementById('chapterContent');
+    contentDiv.innerHTML = `
+        <h2 style="text-align: center; margin-bottom: 2rem;">Chapter ${chapter.number}: ${chapter.title}</h2>
+        ${content}
+    `;
+    document.querySelector('.chapter-content-panel').scrollTop = 0;
+}
+
+function updateChapterNavigation() {
+    const prevBtn = document.getElementById('prevChapter');
+    const nextBtn = document.getElementById('nextChapter');
+    prevBtn.disabled = state.currentChapterIndex === 0;
+    nextBtn.disabled = state.currentChapterIndex >= state.chapters.length - 1;
+}
+
+function navigateChapter(direction) {
+    const newIndex = state.currentChapterIndex + direction;
+    if (newIndex >= 0 && newIndex < state.chapters.length) {
+        loadChapter(newIndex);
+    }
+}
+
+function openNovel(novelId) {
+    loadNovelDetails(novelId);
+}
+
+function showLoading() {
+    document.getElementById('novelGrid').innerHTML = '<div class="loading"><div class="loading-spinner"></div><p>Loading...</p></div>';
+}
+
+function showError(message) {
+    document.getElementById('novelGrid').innerHTML = `<div class="loading"><p style="color: var(--accent-terracotta);">${message}</p></div>`;
+}
+
+function updateStats() {
+    document.getElementById('totalNovels').textContent = state.novels.length;
+    const totalChapters = state.novels.reduce((sum, novel) => sum + (novel.chapters || 0), 0);
+    document.getElementById('totalChapters').textContent = totalChapters.toLocaleString();
+}

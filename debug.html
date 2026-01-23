@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LibRead Ereader - DEBUG</title>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; padding: 2rem; }
+        .debug-panel { 
+            background: #1a1a1a; 
+            color: #00ff00; 
+            padding: 1rem; 
+            border-radius: 8px; 
+            margin: 1rem 0;
+            font-family: monospace;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .log-entry { margin: 0.5rem 0; }
+        .error { color: #ff6b6b; }
+        .success { color: #51cf66; }
+        .info { color: #339af0; }
+        h1 { color: #333; }
+    </style>
+</head>
+<body>
+    <h1>🔍 LibRead Ereader - Debug Mode</h1>
+    <div id="debugPanel" class="debug-panel">
+        <div class="log-entry info">Initializing debug mode...</div>
+    </div>
+    
+    <div id="stats"></div>
+    
+    <script>
+    const debugPanel = document.getElementById('debugPanel');
+    const stats = document.getElementById('stats');
+    
+    function log(message, type = 'info') {
+        const entry = document.createElement('div');
+        entry.className = 'log-entry ' + type;
+        entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + message;
+        debugPanel.appendChild(entry);
+        debugPanel.scrollTop = debugPanel.scrollHeight;
+        console.log(message);
+    }
+    
+    // Intercept console.log
+    const originalLog = console.log;
+    console.log = function(...args) {
+        log(args.join(' '), 'info');
+        originalLog.apply(console, args);
+    };
+    
+    // Test 1: Check if app.js loads
+    log('Testing app.js loading...', 'info');
+    
+    fetch('app.js')
+        .then(response => {
+            log('✓ app.js found: ' + response.status + ' ' + response.statusText, 'success');
+            return response.text();
+        })
+        .then(code => {
+            log('✓ app.js loaded: ' + code.length + ' bytes', 'success');
+            
+            // Test 2: Load latest novels
+            log('Testing latest novels API...', 'info');
+            return fetch('http://localhost:3001/api/search?q=https://libread.com/sort/latest-release/1');
+        })
+        .then(response => {
+            log('✓ API response: ' + response.status, 'success');
+            return response.text();
+        })
+        .then(html => {
+            log('✓ HTML received: ' + html.length + ' bytes', 'success');
+            
+            // Parse for novels
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const novels = doc.querySelectorAll('.ul-list1 .li, .ul-list2 .li, .li-row');
+            log('✓ Found ' + novels.length + ' novel elements', novels.length > 0 ? 'success' : 'error');
+            
+            if (novels.length > 0) {
+                stats.innerHTML = '<h2 style="color:green">✅ SUCCESS: Found ' + novels.length + ' novels!</h2>';
+                
+                // Show first 3 titles
+                for (let i = 0; i < Math.min(3, novels.length); i++) {
+                    const title = novels[i].querySelector('h3.tit a, .tit a');
+                    if (title) {
+                        log('Novel ' + (i+1) + ': ' + title.textContent.trim(), 'success');
+                    }
+                }
+            } else {
+                stats.innerHTML = '<h2 style="color:red">❌ ERROR: No novels found in HTML</h2>';
+                log('HTML preview (first 500 chars): ' + html.substring(0, 500), 'error');
+            }
+        })
+        .catch(error => {
+            log('❌ Error: ' + error.message, 'error');
+            stats.innerHTML = '<h2 style="color:red">❌ ERROR: ' + error.message + '</h2>';
+        });
+    </script>
+</body>
+</html>

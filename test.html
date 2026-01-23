@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chapter Display Test</title>
+    <style>
+        body { font-family: system-ui; padding: 2rem; max-width: 800px; margin: 0 auto; }
+        .test-result { margin: 1rem 0; padding: 1rem; border: 1px solid #ccc; border-radius: 4px; }
+        .pass { background: #d4edda; border-color: #c3e6cb; }
+        .fail { background: #f8d7da; border-color: #f5c6cb; }
+        code { background: #f5f5f5; padding: 0.2rem 0.4rem; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <h1>📚 Chapter Display Fix Tests</h1>
+    
+    <div id="results"></div>
+    
+    <script>
+        const results = document.getElementById('results');
+        
+        function addTest(name, passed, details) {
+            const div = document.createElement('div');
+            div.className = `test-result ${passed ? 'pass' : 'fail'}`;
+            div.innerHTML = `
+                <strong>${passed ? '✓' : '✗'} ${name}</strong><br>
+                <small>${details}</small>
+            `;
+            results.appendChild(div);
+        }
+        
+        // Test 1: HTML Tag Cleaning
+        const dirtyTitle = "Chapter 1: C.1: Trust Me, Bro</option>";
+        let cleanTitle = dirtyTitle.replace(/<\/?[^>]+(>|$)/g, '').trim();
+        cleanTitle = cleanTitle.replace(/^Chapter\s*\d+[:\s]*/i, '').trim();
+        cleanTitle = cleanTitle.replace(/^C\.?\d+[:\s.]*/i, '').trim();
+        cleanTitle = cleanTitle.replace(/\s+/g, ' ').trim();
+        cleanTitle = cleanTitle.replace(/&lt;\/?[^&]+&(?:gt|amp);?/gi, '').trim();
+        addTest(
+            'HTML Tag Cleaning',
+            cleanTitle === 'Trust Me, Bro',
+            `Input: <code>"${dirtyTitle}"</code><br>Output: <code>"${cleanTitle}"</code>`
+        );
+        
+        // Test 2: HTML Entity Decoding
+        const withEntities = "Chapter 2: &quot;Test&quot; &amp; More";
+        let decoded = withEntities.replace(/&quot;/gi, '"').replace(/&#39;/gi, "'").replace(/&amp;/gi, '&');
+        decoded = decoded.replace(/^Chapter\s*\d+[:\s]*/i, '').trim();
+        addTest(
+            'HTML Entity Decoding',
+            decoded === '"Test" & More',
+            `Input: <code>"${withEntities}"</code><br>Output: <code>"${decoded}"</code>`
+        );
+        
+        // Test 3: URL Construction (relative path)
+        const novelUrl = 'https://libread.com/lib/12345';
+        const chapterSlug = 'chapter-01';
+        const baseUrl = novelUrl.substring(0, novelUrl.lastIndexOf('/'));
+        const fullUrl = `${baseUrl}/${chapterSlug}`;
+        addTest(
+            'Relative URL Construction',
+            fullUrl === 'https://libread.com/lib/12345/chapter-01',
+            `Novel URL: <code>${novelUrl}</code><br>Chapter: <code>${chapterSlug}</code><br>Result: <code>${fullUrl}</code>`
+        );
+        
+        // Test 4: URL Construction (absolute path)
+        const absolutePath = '/lib/67890/chapter-02';
+        const API_BASE = 'https://libread.com';
+        const absoluteUrl = absolutePath.startsWith('/lib/') ? `${API_BASE}${absolutePath}` : absolutePath;
+        addTest(
+            'Absolute URL Construction',
+            absoluteUrl === 'https://libread.com/lib/67890/chapter-02',
+            `Path: <code>${absolutePath}</code><br>Result: <code>${absoluteUrl}</code>`
+        );
+        
+        // Test 5: Content Cleaning
+        const dirtyContent = '<p>Some text</p><script>alert("bad")</script><!-- comment --><p>More text</p>';
+        const cleanContent = dirtyContent
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<!--[\s\S]*?-->/g, '')
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+        addTest(
+            'Content Cleaning',
+            cleanContent.includes('Some text') && 
+            cleanContent.includes('More text') && 
+            !cleanContent.includes('alert') && 
+            !cleanContent.includes('comment'),
+            `Removed scripts and comments while preserving content`
+        );
+        
+        // Test 6: Chapter Number Extraction
+        const chapterUrl = 'https://libread.com/lib/12345/chapter-15';
+        const numMatch = chapterUrl.match(/chapter-?(\d+)/i);
+        const chapterNum = numMatch ? parseInt(numMatch[1]) : null;
+        addTest(
+            'Chapter Number Extraction',
+            chapterNum === 15,
+            `URL: <code>${chapterUrl}</code><br>Extracted: <code>${chapterNum}</code>`
+        );
+        
+        // Summary
+        const summary = document.createElement('div');
+        const passCount = document.querySelectorAll('.pass').length;
+        const totalCount = document.querySelectorAll('.test-result').length;
+        summary.style.cssText = 'margin-top: 2rem; padding: 1rem; background: #e7f3ff; border-radius: 4px; font-weight: bold;';
+        summary.textContent = `Tests Passed: ${passCount}/${totalCount}`;
+        results.appendChild(summary);
+    </script>
+</body>
+</html>

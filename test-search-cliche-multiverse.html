@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LibRead Search Test - Cliche Multiverse</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; padding: 2rem; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-bottom: 1rem; }
+        .search-box { display: flex; gap: 0.5rem; margin-bottom: 2rem; }
+        input { flex: 1; padding: 0.75rem; border: 2px solid #ddd; border-radius: 4px; font-size: 1rem; }
+        input:focus { outline: none; border-color: #4CAF50; }
+        button { padding: 0.75rem 1.5rem; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; }
+        button:hover { background: #45a049; }
+        #results { margin-top: 1rem; }
+        .novel { padding: 1rem; border-bottom: 1px solid #eee; }
+        .novel:last-child { border-bottom: none; }
+        .novel h3 { color: #2196F3; margin-bottom: 0.5rem; }
+        .novel a { color: #2196F3; text-decoration: none; }
+        .novel a:hover { text-decoration: underline; }
+        .status { padding: 0.5rem; margin-bottom: 1rem; border-radius: 4px; }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        .status.loading { background: #fff3cd; color: #856404; }
+        #searchTerm { color: #666; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 LibRead Search Test</h1>
+        <p id="searchTerm">Testing with: <strong>"cliche multiverse"</strong></p>
+        
+        <div class="search-box">
+            <input type="text" id="searchInput" value="cliche multiverse" placeholder="Search novels...">
+            <button onclick="testSearch()">Search</button>
+        </div>
+        
+        <div id="status"></div>
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3001/api/search';
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.className = 'status ' + type;
+            status.textContent = message;
+        }
+
+        async function testSearch() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) {
+                showStatus('Please enter a search term', 'error');
+                return;
+            }
+
+            showStatus('Searching for: ' + query, 'loading');
+            document.getElementById('results').innerHTML = '';
+
+            try {
+                const formData = new FormData();
+                formData.append('searchkey', query);
+
+                const response = await fetch(API_BASE, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error('Network response was not ok: ' + response.status);
+                }
+
+                const html = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+
+                // Parse novels from the HTML
+                const novels = [];
+                const novelItems = doc.querySelectorAll('.ul-list1 .li, .ul-list2 .li, .li-row');
+
+                novelItems.forEach(item => {
+                    const titleLink = item.querySelector('h3.tit a, .tit a, .s1 a');
+                    if (!titleLink) return;
+
+                    const title = titleLink.getAttribute('title') || titleLink.textContent.trim();
+                    const url = titleLink.getAttribute('href');
+                    if (!url) return;
+
+                    novels.push({ title, url });
+                });
+
+                // Display results
+                const resultsDiv = document.getElementById('results');
+                if (novels.length > 0) {
+                    showStatus('✅ Found ' + novels.length + ' novels for "' + query + '"', 'success');
+                    resultsDiv.innerHTML = novels.map(novel => `
+                        <div class="novel">
+                            <h3><a href="${novel.url}" target="_blank">${novel.title}</a></h3>
+                        </div>
+                    `).join('');
+                } else {
+                    showStatus('❌ No novels found for "' + query + '"', 'error');
+                    resultsDiv.innerHTML = '<p>The search returned no results. This might indicate a search issue.</p>';
+                }
+
+                console.log('✅ Search complete. Found:', novels.length, 'novels');
+            } catch (error) {
+                showStatus('❌ Search failed: ' + error.message, 'error');
+                console.error('Search error:', error);
+            }
+        }
+
+        // Auto-run test on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('Testing search with "cliche multiverse"...');
+            testSearch();
+        });
+    </script>
+</body>
+</html>

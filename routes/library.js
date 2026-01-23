@@ -376,6 +376,356 @@ router.delete('/:libraryId/bookmarks/:bookmarkId', (req, res) => {
     }
 });
 
+// ==================== ANNOTATIONS (Highlights & Notes) ====================
+
+// Get all annotations for a book
+router.get('/:libraryId/annotations', (req, res) => {
+    try {
+        const { chapterIndex } = req.query;
+        
+        let query = `
+            SELECT * FROM annotations 
+            WHERE library_id = ? AND user_id = ?
+        `;
+        const params = [req.params.libraryId, req.user.userId];
+        
+        if (chapterIndex !== undefined) {
+            query += ' AND chapter_index = ?';
+            params.push(parseInt(chapterIndex));
+        }
+        
+        query += ' ORDER BY chapter_index, start_offset';
+        
+        const annotations = db.prepare(query).all(...params);
+        
+        res.json({
+            annotations: annotations.map(a => ({
+                id: a.id,
+                chapterIndex: a.chapter_index,
+                chapterUrl: a.chapter_url,
+                type: a.type,
+                color: a.color,
+                selectedText: a.selected_text,
+                note: a.note,
+                startOffset: a.start_offset,
+                endOffset: a.end_offset,
+                paragraphIndex: a.paragraph_index,
+                paragraphTextPreview: a.paragraph_text_preview,
+                createdAt: a.created_at,
+                updatedAt: a.updated_at
+            }))
+        });
+        
+    } catch (error) {
+        console.error('[Library] Get annotations error:', error);
+        res.status(500).json({ error: 'Failed to get annotations' });
+    }
+});
+
+// Get annotations for a specific chapter
+router.get('/:libraryId/chapters/:chapterIndex/annotations', (req, res) => {
+    try {
+        const annotations = db.prepare(`
+            SELECT * FROM annotations 
+            WHERE library_id = ? AND user_id = ? AND chapter_index = ?
+            ORDER BY start_offset
+        `).all(req.params.libraryId, req.user.userId, parseInt(req.params.chapterIndex));
+        
+        res.json({
+            annotations: annotations.map(a => ({
+                id: a.id,
+                chapterIndex: a.chapter_index,
+                chapterUrl: a.chapter_url,
+                type: a.type,
+                color: a.color,
+                selectedText: a.selected_text,
+                note: a.note,
+                startOffset: a.start_offset,
+                endOffset: a.end_offset,
+                paragraphIndex: a.paragraph_index,
+                paragraphTextPreview: a.paragraph_text_preview,
+                createdAt: a.created_at,
+                updatedAt: a.updated_at
+            }))
+        });
+        
+    } catch (error) {
+        console.error('[Library] Get chapter annotations error:', error);
+        res.status(500).json({ error: 'Failed to get annotations' });
+    }
+});
+
+// Create annotation (highlight or note)
+router.post('/:libraryId/annotations', (req, res) => {
+    try {
+        const { 
+            chapterIndex, 
+            chapterUrl,
+            type = 'highlight',
+            color = 'yellow',
+            selectedText, 
+            note,
+            startOffset,
+            endOffset,
+            paragraphIndex,
+            paragraphTextPreview
+        } = req.body;
+        
+        // Validation
+        if (chapterIndex === undefined || startOffset === undefined || endOffset === undefined) {
+            return res.status(400).json({ error: 'Chapter index and text offsets are required' });
+        }
+        
+        if (!selectedText || selectedText.trim().length === 0) {
+            return res.status(400).json({ error: 'Selected text is required' });
+        }
+        
+        const validTypes = ['highlight', 'note', 'underline'];
+        if (!validTypes.includes(type)) {
+            return res.status(400).json({ error: 'Invalid annotation type' });
+        }
+        
+        const validColors = ['yellow', 'green', 'blue', 'pink', 'purple', 'orange'];
+        const safeColor = validColors.includes(color) ? color : 'yellow';
+        
+        const annotationId = uuidv4();
+        const now = new Date().toISOString();
+        
+        db.prepare(`
+            INSERT INTO annotations (
+                id, user_id, library_id, chapter_index, chapter_url, type, color,
+                selected_text, note, start_offset, end_offset, 
+                paragraph_index, paragraph_text_preview, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            annotationId, req.user.userId, req.params.libraryId,
+            chapterIndex, chapterUrl || null, type, safeColor,
+            selectedText, note || null, startOffset, endOffset,
+            paragraphIndex || null, paragraphTextPreview || null, now, now
+        );
+        
+        res.status(201).json({
+            message: 'Annotation created',
+            annotation: {
+                id: annotationId,
+                chapterIndex,
+                chapterUrl,
+                type,
+                color: safeColor,
+                selectedText,
+                note,
+                startOffset,
+                endOffset,
+                paragraphIndex,
+                paragraphTextPreview,
+                createdAt: now,
+                updatedAt: now
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Library] Create annotation error:', error);
+        res.status(500).json({ error: 'Failed to create annotation' });
+    }
+});
+
+// Update annotation (change color, add/edit note)
+router.patch('/:libraryId/annotations/:annotationId', (req, res) => {
+    try {
+        const { color, note, type } = req.body;
+        const updates = [];
+        const params = [];
+        
+        if (color !== undefined) {
+            const validColors = ['yellow', 'green', 'blue', 'pink', 'purple', 'orange'];
+            if (!validColors.includes(color)) {
+                return res.status(400).json({ error: 'Invalid color' });
+            }
+            updates.push('color = ?');
+            params.push(color);
+        }
+        
+        if (note !== undefined) {
+            updates.push('note = ?');
+            params.push(note || null);
+        }
+        
+        if (type !== undefined) {
+            const validTypes = ['highlight', 'note', 'underline'];
+            if (!validTypes.includes(type)) {
+                return res.status(400).json({ error: 'Invalid type' });
+            }
+            updates.push('type = ?');
+            params.push(type);
+        }
+        
+        if (updates.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+        
+        updates.push('updated_at = ?');
+        params.push(new Date().toISOString());
+        params.push(req.params.annotationId);
+        params.push(req.params.libraryId);
+        params.push(req.user.userId);
+        
+        const result = db.prepare(`
+            UPDATE annotations SET ${updates.join(', ')} 
+            WHERE id = ? AND library_id = ? AND user_id = ?
+        `).run(...params);
+        
+        if (result.changes === 0) {
+            return res.status(404).json({ error: 'Annotation not found' });
+        }
+        
+        res.json({ message: 'Annotation updated' });
+        
+    } catch (error) {
+        console.error('[Library] Update annotation error:', error);
+        res.status(500).json({ error: 'Failed to update annotation' });
+    }
+});
+
+// Delete annotation
+router.delete('/:libraryId/annotations/:annotationId', (req, res) => {
+    try {
+        const result = db.prepare(
+            'DELETE FROM annotations WHERE id = ? AND library_id = ? AND user_id = ?'
+        ).run(req.params.annotationId, req.params.libraryId, req.user.userId);
+        
+        if (result.changes === 0) {
+            return res.status(404).json({ error: 'Annotation not found' });
+        }
+        
+        res.json({ message: 'Annotation deleted' });
+        
+    } catch (error) {
+        console.error('[Library] Delete annotation error:', error);
+        res.status(500).json({ error: 'Failed to delete annotation' });
+    }
+});
+
+// Bulk sync annotations (for offline-first sync)
+router.post('/:libraryId/annotations/sync', (req, res) => {
+    try {
+        const { annotations: clientAnnotations, lastSyncTime } = req.body;
+        
+        if (!Array.isArray(clientAnnotations)) {
+            return res.status(400).json({ error: 'Annotations array is required' });
+        }
+        
+        const now = new Date().toISOString();
+        const results = {
+            created: 0,
+            updated: 0,
+            deleted: 0,
+            conflicts: []
+        };
+        
+        // Get server annotations updated since last sync
+        let serverAnnotations = [];
+        if (lastSyncTime) {
+            serverAnnotations = db.prepare(`
+                SELECT * FROM annotations 
+                WHERE library_id = ? AND user_id = ? AND updated_at > ?
+            `).all(req.params.libraryId, req.user.userId, lastSyncTime);
+        }
+        
+        // Process client annotations
+        for (const annotation of clientAnnotations) {
+            if (annotation._deleted) {
+                // Delete annotation
+                const result = db.prepare(
+                    'DELETE FROM annotations WHERE id = ? AND library_id = ? AND user_id = ?'
+                ).run(annotation.id, req.params.libraryId, req.user.userId);
+                if (result.changes > 0) results.deleted++;
+            } else {
+                // Check if exists
+                const existing = db.prepare(
+                    'SELECT id, updated_at FROM annotations WHERE id = ? AND user_id = ?'
+                ).get(annotation.id, req.user.userId);
+                
+                if (existing) {
+                    // Update if client version is newer
+                    if (!annotation.updatedAt || annotation.updatedAt >= existing.updated_at) {
+                        db.prepare(`
+                            UPDATE annotations SET 
+                                color = ?, note = ?, type = ?, updated_at = ?, synced_at = ?
+                            WHERE id = ?
+                        `).run(
+                            annotation.color || 'yellow',
+                            annotation.note || null,
+                            annotation.type || 'highlight',
+                            now, now, annotation.id
+                        );
+                        results.updated++;
+                    } else {
+                        // Conflict - server version is newer
+                        results.conflicts.push({
+                            id: annotation.id,
+                            clientUpdatedAt: annotation.updatedAt,
+                            serverUpdatedAt: existing.updated_at
+                        });
+                    }
+                } else {
+                    // Create new annotation
+                    const annotationId = annotation.id || uuidv4();
+                    db.prepare(`
+                        INSERT INTO annotations (
+                            id, user_id, library_id, chapter_index, chapter_url, type, color,
+                            selected_text, note, start_offset, end_offset, 
+                            paragraph_index, paragraph_text_preview, created_at, updated_at, synced_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    `).run(
+                        annotationId, req.user.userId, req.params.libraryId,
+                        annotation.chapterIndex, annotation.chapterUrl || null,
+                        annotation.type || 'highlight', annotation.color || 'yellow',
+                        annotation.selectedText, annotation.note || null,
+                        annotation.startOffset, annotation.endOffset,
+                        annotation.paragraphIndex || null, annotation.paragraphTextPreview || null,
+                        annotation.createdAt || now, now, now
+                    );
+                    results.created++;
+                }
+            }
+        }
+        
+        // Return server annotations that client may not have
+        const allAnnotations = db.prepare(`
+            SELECT * FROM annotations 
+            WHERE library_id = ? AND user_id = ?
+            ORDER BY chapter_index, start_offset
+        `).all(req.params.libraryId, req.user.userId);
+        
+        res.json({
+            message: 'Sync complete',
+            results,
+            serverTime: now,
+            annotations: allAnnotations.map(a => ({
+                id: a.id,
+                chapterIndex: a.chapter_index,
+                chapterUrl: a.chapter_url,
+                type: a.type,
+                color: a.color,
+                selectedText: a.selected_text,
+                note: a.note,
+                startOffset: a.start_offset,
+                endOffset: a.end_offset,
+                paragraphIndex: a.paragraph_index,
+                paragraphTextPreview: a.paragraph_text_preview,
+                createdAt: a.created_at,
+                updatedAt: a.updated_at
+            }))
+        });
+        
+    } catch (error) {
+        console.error('[Library] Sync annotations error:', error);
+        res.status(500).json({ error: 'Failed to sync annotations' });
+    }
+});
+
 // ==================== STATISTICS ====================
 
 // Update reading stats (called periodically while reading)
