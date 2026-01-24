@@ -894,6 +894,393 @@
             opacity: 0.6;
         }
 
+        /* Word-level highlight */
+        .tts-word-highlight {
+            background: rgba(255, 200, 0, 0.6);
+            border-radius: 2px;
+            padding: 0 1px;
+            animation: tts-word-pulse 0.3s ease-out;
+        }
+
+        @keyframes tts-word-pulse {
+            0% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+        /* Sleep Timer Styles */
+        .tts-sleep-control {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-left: 0.5rem;
+            padding-left: 0.5rem;
+            border-left: 1px solid var(--border-warm);
+        }
+
+        .sleep-timer-btn {
+            background: none;
+            border: 1px solid var(--border-warm);
+            border-radius: 4px;
+            padding: 0.3rem 0.6rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            color: var(--text-muted);
+            transition: all 0.2s;
+        }
+
+        .sleep-timer-btn:hover {
+            background: var(--border-warm);
+            color: var(--text-dark);
+        }
+
+        .sleep-timer-btn.active {
+            background: var(--accent-gold);
+            color: white;
+            border-color: var(--accent-gold);
+        }
+
+        #sleepTimerDisplay {
+            font-size: 0.7rem;
+            min-width: 2rem;
+            text-align: center;
+        }
+
+        #sleepTimerDisplay.active {
+            color: var(--accent-gold);
+            font-weight: 600;
+        }
+
+        /* Pitch Control */
+        .tts-pitch-control {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-left: 0.5rem;
+        }
+
+        .tts-pitch-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .tts-pitch-slider {
+            width: 60px;
+            height: 4px;
+            -webkit-appearance: none;
+            background: var(--border-warm);
+            border-radius: 2px;
+            outline: none;
+        }
+
+        .tts-pitch-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            background: var(--accent-gold);
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .tts-pitch-display {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            min-width: 2rem;
+        }
+
+        /* Voice Selection Modal */
+        .voice-selector-modal {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: var(--bg-warm-white);
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            max-width: 500px;
+            width: 90%;
+            max-height: 70vh;
+            overflow: hidden;
+            z-index: 10001;
+        }
+
+        .voice-selector-header {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-warm);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .voice-selector-title {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .voice-selector-close {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--text-muted);
+        }
+
+        .voice-selector-content {
+            padding: 1rem;
+            max-height: 50vh;
+            overflow-y: auto;
+        }
+
+        .voice-group {
+            margin-bottom: 1rem;
+        }
+
+        .voice-group-header {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            padding-bottom: 0.3rem;
+            border-bottom: 1px solid var(--border-warm);
+        }
+
+        .voice-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+        }
+
+        .voice-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0.75rem;
+            background: var(--bg-cream);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .voice-item:hover {
+            background: var(--border-warm);
+        }
+
+        .voice-item.selected {
+            background: var(--accent-gold);
+            color: white;
+        }
+
+        .voice-item-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .voice-item-name {
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .voice-item-meta {
+            font-size: 0.75rem;
+            opacity: 0.7;
+        }
+
+        .voice-preview-btn {
+            background: none;
+            border: 1px solid currentColor;
+            border-radius: 4px;
+            padding: 0.2rem 0.5rem;
+            font-size: 0.7rem;
+            cursor: pointer;
+            opacity: 0.7;
+        }
+
+        .voice-preview-btn:hover {
+            opacity: 1;
+        }
+
+        /* Sleep Timer Modal */
+        .sleep-timer-modal {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: var(--bg-warm-white);
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 1.5rem;
+            z-index: 10001;
+            min-width: 280px;
+        }
+
+        .sleep-timer-modal h3 {
+            margin: 0 0 1rem 0;
+            font-size: 1.1rem;
+        }
+
+        .sleep-timer-options {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .sleep-timer-option {
+            padding: 0.6rem;
+            border: 1px solid var(--border-warm);
+            border-radius: 6px;
+            background: none;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+
+        .sleep-timer-option:hover {
+            background: var(--border-warm);
+        }
+
+        .sleep-timer-option.selected {
+            background: var(--accent-gold);
+            color: white;
+            border-color: var(--accent-gold);
+        }
+
+        .sleep-timer-custom {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .sleep-timer-custom input {
+            width: 60px;
+            padding: 0.4rem;
+            border: 1px solid var(--border-warm);
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .sleep-timer-actions {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+        }
+
+        .sleep-timer-modal-content {
+            max-width: 400px;
+        }
+
+        .sleep-timer-options h3 {
+            margin: 1rem 0 0.5rem 0;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            display: block;
+            grid-column: 1 / -1;
+        }
+
+        .sleep-timer-options h3:first-child {
+            margin-top: 0;
+        }
+
+        .sleep-timer-time-options,
+        .sleep-timer-chapter-options {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .sleep-option-btn {
+            padding: 0.6rem 0.5rem;
+            border: 1px solid var(--border-warm);
+            border-radius: 6px;
+            background: var(--bg-cream);
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+            color: var(--text-dark);
+        }
+
+        .sleep-option-btn:hover {
+            background: var(--border-warm);
+        }
+
+        .sleep-timer-status {
+            text-align: center;
+            padding: 0.75rem;
+            background: var(--bg-cream);
+            border-radius: 6px;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .sleep-timer-status.active {
+            background: rgba(212, 175, 55, 0.15);
+            color: var(--accent-gold);
+            font-weight: 500;
+        }
+
+        .voice-preview-section {
+            margin-top: 1.5rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border-warm);
+        }
+
+        .voice-preview-section h3 {
+            margin: 0 0 0.75rem 0;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .voice-loading {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-muted);
+        }
+
+        /* Resume Position Banner */
+        .tts-resume-banner {
+            background: linear-gradient(135deg, var(--accent-gold) 0%, var(--accent-terracotta) 100%);
+            color: white;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .tts-resume-banner p {
+            margin: 0;
+            font-size: 0.9rem;
+        }
+
+        .tts-resume-banner button {
+            background: white;
+            color: var(--accent-terracotta);
+            border: none;
+            padding: 0.4rem 0.8rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        /* Offline/Cache indicator */
+        .tts-cache-indicator {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+
+        .tts-cache-indicator.cached {
+            color: #22c55e;
+        }
+
         /* Seekbar styles - make it clickable */
         .tts-progress-bar {
             cursor: pointer;
@@ -2028,6 +2415,26 @@
                             <span class="tts-toggle-label">Auto-next</span>
                         </label>
                     </div>
+                    <!-- Pitch Control -->
+                    <div class="tts-pitch-control">
+                        <span class="tts-pitch-label">Pitch:</span>
+                        <input type="range" class="tts-pitch-slider" id="ttsPitchSlider"
+                               min="50" max="200" value="100"
+                               oninput="ttsManager.setPitch(this.value / 100)"
+                               title="Pitch (50% - 200%)">
+                        <span class="tts-pitch-display" id="ttsPitchDisplay">100%</span>
+                    </div>
+                    <!-- Sleep Timer -->
+                    <div class="tts-sleep-control">
+                        <button class="tts-btn tts-btn-icon sleep-timer-btn" id="sleepTimerBtn" onclick="openSleepTimerModal()" title="Sleep Timer">
+                            <span>🌙</span>
+                        </button>
+                        <span class="sleep-timer-display" id="sleepTimerDisplay">Off</span>
+                    </div>
+                    <!-- Voice Selector -->
+                    <button class="tts-btn tts-btn-icon" id="voiceSelectorBtn" onclick="openVoiceSelectorModal()" title="Select Voice">
+                        <span>🎤</span>
+                    </button>
                 </div>
                 <div class="tts-progress" id="ttsProgress">
                     <div class="tts-progress-bar">
@@ -2052,6 +2459,68 @@
             </div>
 
             <div class="chapter-content" id="chapterContent"></div>
+        </div>
+    </div>
+
+    <!-- TTS Resume Banner (shown when there's a saved position) -->
+    <div class="tts-resume-banner" id="ttsResumeBanner" style="display: none;">
+        <p>Resume TTS from where you left off?</p>
+        <button class="btn btn-primary" onclick="ttsManager.resumeFromSavedPosition()">Resume</button>
+        <button class="btn" onclick="ttsManager.clearSavedPosition(); document.getElementById('ttsResumeBanner').style.display = 'none';">Dismiss</button>
+    </div>
+
+    <!-- Sleep Timer Modal -->
+    <div class="modal-overlay sleep-timer-modal" id="sleepTimerModal">
+        <div class="modal sleep-timer-modal-content">
+            <button class="modal-close" onclick="closeSleepTimerModal()">&times;</button>
+            <h2 class="modal-title">Sleep Timer</h2>
+            <p class="modal-subtitle">Automatically pause playback after a set time or chapters</p>
+            
+            <div class="sleep-timer-options">
+                <h3>Time-based</h3>
+                <div class="sleep-timer-time-options">
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimer(15); closeSleepTimerModal();">15 min</button>
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimer(30); closeSleepTimerModal();">30 min</button>
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimer(45); closeSleepTimerModal();">45 min</button>
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimer(60); closeSleepTimerModal();">1 hour</button>
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimer(90); closeSleepTimerModal();">1.5 hours</button>
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimer(120); closeSleepTimerModal();">2 hours</button>
+                </div>
+                
+                <h3>Chapter-based</h3>
+                <div class="sleep-timer-chapter-options">
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimerChapters(1); closeSleepTimerModal();">1 chapter</button>
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimerChapters(2); closeSleepTimerModal();">2 chapters</button>
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimerChapters(3); closeSleepTimerModal();">3 chapters</button>
+                    <button class="sleep-option-btn" onclick="ttsManager.setSleepTimerChapters(5); closeSleepTimerModal();">5 chapters</button>
+                </div>
+                
+                <div class="sleep-timer-status" id="sleepTimerStatus"></div>
+                
+                <button class="btn btn-secondary" onclick="ttsManager.clearSleepTimer(); closeSleepTimerModal();" id="sleepTimerCancelBtn" style="display: none;">
+                    Cancel Timer
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Voice Selector Modal -->
+    <div class="modal-overlay voice-selector-modal" id="voiceSelectorModal">
+        <div class="modal voice-selector-content">
+            <button class="modal-close" onclick="closeVoiceSelectorModal()">&times;</button>
+            <h2 class="modal-title voice-selector-title">Select Voice</h2>
+            <p class="modal-subtitle">Choose a voice for text-to-speech</p>
+            
+            <div class="voice-groups" id="voiceGroups">
+                <!-- Voice groups will be populated dynamically -->
+                <div class="voice-loading">Loading voices...</div>
+            </div>
+            
+            <div class="voice-preview-section">
+                <h3>Preview</h3>
+                <input type="text" class="form-input" id="voicePreviewText" value="Hello, this is a voice preview." placeholder="Enter text to preview">
+                <button class="btn btn-secondary" onclick="previewSelectedVoice()">Preview Voice</button>
+            </div>
         </div>
     </div>
 

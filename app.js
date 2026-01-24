@@ -268,21 +268,72 @@ function closeKeyboardShortcutsHelp() {
     if (modal) modal.classList.remove('active');
 }
 
+// TTS State Machine Constants
+const TTSState = {
+    STOPPED: 'stopped',
+    LOADING: 'loading',
+    PLAYING: 'playing',
+    PAUSED: 'paused',
+    SEEKING: 'seeking',
+    ERROR: 'error'
+};
+
 // TTS Manager implementation with Web Audio API for gapless playback
 // Uses AudioContext and AudioBufferSourceNode for precise timing control
 const ttsManager = {
     client: null,
     
-    // Web Audio API components
+    // === STATE MACHINE ===
+    state: TTSState.STOPPED,
+    previousState: null,
+    
+    // === MULTI-ENGINE SUPPORT ===
+    engines: {
+        server: null,      // Piper/Edge-TTS via server
+        webSpeech: null    // Browser's built-in TTS as fallback
+    },
+    activeEngine: 'server',
+    webSpeechUtterance: null,
+    
+    // === WEB AUDIO API COMPONENTS ===
     audioContext: null,
     gainNode: null,           // For volume control and fade-in/out
     currentSource: null,      // Currently playing AudioBufferSourceNode
     
-    // Playback state
+    // === PLAYBACK SETTINGS ===
+    speed: 1.0,
+    pitch: 1.0,              // NEW: Pitch control (0.5 - 2.0)
+    volume: 1.0,
+    isMuted: false,
+    previousVolume: 1.0,
+    
+    // === SLEEP TIMER ===
+    sleepTimer: {
+        timeout: null,
+        endTime: null,
+        mode: null,           // 'time' or 'chapters'
+        remainingChapters: 0,
+        active: false
+    },
+    
+    // === VOICE PREFERENCES ===
+    voicePreferences: {},     // { 'en': 'voice-id', 'zh': 'voice-id', ... }
+    currentVoice: null,
+    availableVoices: [],
+    
+    // === POSITION BOOKMARKING ===
+    savedPosition: null,      // { bookId, chapterIndex, segmentIndex, textOffset, timestamp }
+    
+    // === AUDIO CACHING (Offline Support) ===
+    audioCache: null,         // Cache API reference
+    cacheName: 'tts-audio-cache-v1',
+    prefetchQueue: [],
+    isPrefetching: false,
+    
+    // Legacy compatibility
     isPlaying: false,
     isPaused: false,
     currentJobId: null,
-    speed: 1.0,
     
     // Segment streaming state
     segments: [],             // Array of segment info from manifest
@@ -315,23 +366,885 @@ const ttsManager = {
     originalText: '',             // Store original chapter text
 
     init() {
+        // Initialize server TTS client
         if (typeof TTSClient !== 'undefined') {
             this.client = new TTSClient('/api/tts');
+            this.engines.server = this.client;
             
             // Load engine preference from localStorage
             this.loadEngineFromSettings();
         }
         
+        // Initialize WebSpeech fallback
+        this.initWebSpeechFallback();
+        
         // Don't create AudioContext until user interaction (browser autoplay policy)
         // Will be created on first play()
         
-        // Load autoplay preference
+        // Load all user preferences
         this.loadAutoplayFromSettings();
+        this.loadVoicePreferences();
+        this.loadPitchFromSettings();
+        this.loadSavedPosition();
+        
+        // Initialize audio cache for offline playback
+        this.initAudioCache();
         
         // Set up seekbar click handler
         this.setupSeekbar();
         
-        console.log('[TTS] Manager initialized (Web Audio API mode)');
+        // Set up sleep timer UI
+        this.setupSleepTimerUI();
+        
+        console.log('[TTS] Manager initialized (Web Audio API mode with enhanced features)');
+    },
+    
+    // ==================== STATE MACHINE ====================
+    
+    setState(newState) {
+        if (this.state === newState) return;
+        
+        this.previousState = this.state;
+        this.state = newState;
+        
+        // Update legacy flags for backward compatibility
+        this.isPlaying = newState === TTSState.PLAYING;
+        this.isPaused = newState === TTSState.PAUSED;
+        
+        // Dispatch state change event
+        document.dispatchEvent(new CustomEvent('tts-state-change', {
+            detail: { state: newState, previousState: this.previousState }
+        }));
+        
+        // Update UI based on state
+        this.updateUIForState(newState);
+        
+        console.log('[TTS] State:', this.previousState, '->', newState);
+    },
+    
+    updateUIForState(state) {
+        const playBtn = document.getElementById('ttsPlayBtn');
+        const pauseBtn = document.getElementById('ttsPauseBtn');
+        const stopBtn = document.getElementById('ttsStopBtn');
+        const cancelBtn = document.getElementById('ttsCancelBtn');
+        const skipBackBtn = document.getElementById('ttsSkipBackBtn');
+        const skipForwardBtn = document.getElementById('ttsSkipForwardBtn');
+        
+        switch (state) {
+            case TTSState.STOPPED:
+                if (playBtn) playBtn.disabled = false;
+                if (pauseBtn) pauseBtn.disabled = true;
+                if (stopBtn) stopBtn.disabled = true;
+                if (cancelBtn) cancelBtn.disabled = true;
+                if (skipBackBtn) skipBackBtn.disabled = true;
+                if (skipForwardBtn) skipForwardBtn.disabled = true;
+                break;
+            case TTSState.LOADING:
+                if (playBtn) playBtn.disabled = true;
+                if (pauseBtn) pauseBtn.disabled = true;
+                if (stopBtn) stopBtn.disabled = true;
+                if (cancelBtn) cancelBtn.disabled = false;
+                if (skipBackBtn) skipBackBtn.disabled = true;
+                if (skipForwardBtn) skipForwardBtn.disabled = true;
+                break;
+            case TTSState.PLAYING:
+                if (playBtn) playBtn.disabled = true;
+                if (pauseBtn) pauseBtn.disabled = false;
+                if (stopBtn) stopBtn.disabled = false;
+                if (cancelBtn) cancelBtn.disabled = false;
+                if (skipBackBtn) skipBackBtn.disabled = false;
+                if (skipForwardBtn) skipForwardBtn.disabled = false;
+                break;
+            case TTSState.PAUSED:
+                if (playBtn) playBtn.disabled = false;
+                if (pauseBtn) pauseBtn.disabled = true;
+                if (stopBtn) stopBtn.disabled = false;
+                if (cancelBtn) cancelBtn.disabled = false;
+                if (skipBackBtn) skipBackBtn.disabled = false;
+                if (skipForwardBtn) skipForwardBtn.disabled = false;
+                break;
+            case TTSState.ERROR:
+                if (playBtn) playBtn.disabled = false;
+                if (pauseBtn) pauseBtn.disabled = true;
+                if (stopBtn) stopBtn.disabled = true;
+                if (cancelBtn) cancelBtn.disabled = true;
+                if (skipBackBtn) skipBackBtn.disabled = true;
+                if (skipForwardBtn) skipForwardBtn.disabled = true;
+                break;
+        }
+    },
+    
+    // ==================== SLEEP TIMER ====================
+    
+    setupSleepTimerUI() {
+        // Sleep timer UI will be set up when modal opens
+    },
+    
+    setSleepTimer(minutes) {
+        this.clearSleepTimer();
+        
+        if (minutes <= 0) return;
+        
+        this.sleepTimer.mode = 'time';
+        this.sleepTimer.endTime = Date.now() + (minutes * 60 * 1000);
+        this.sleepTimer.active = true;
+        
+        this.sleepTimer.timeout = setTimeout(() => {
+            this.onSleepTimerEnd();
+        }, minutes * 60 * 1000);
+        
+        // Save to localStorage
+        try {
+            localStorage.setItem('ttsSleepTimer', JSON.stringify({
+                mode: 'time',
+                endTime: this.sleepTimer.endTime
+            }));
+        } catch (e) {}
+        
+        this.updateSleepTimerDisplay();
+        console.log('[TTS] Sleep timer set for', minutes, 'minutes');
+    },
+    
+    setSleepTimerChapters(chapters) {
+        this.clearSleepTimer();
+        
+        if (chapters <= 0) return;
+        
+        this.sleepTimer.mode = 'chapters';
+        this.sleepTimer.remainingChapters = chapters;
+        this.sleepTimer.active = true;
+        
+        // Save to localStorage
+        try {
+            localStorage.setItem('ttsSleepTimer', JSON.stringify({
+                mode: 'chapters',
+                remainingChapters: chapters
+            }));
+        } catch (e) {}
+        
+        this.updateSleepTimerDisplay();
+        console.log('[TTS] Sleep timer set for', chapters, 'chapters');
+    },
+    
+    onChapterComplete() {
+        if (this.sleepTimer.active && this.sleepTimer.mode === 'chapters') {
+            this.sleepTimer.remainingChapters--;
+            this.updateSleepTimerDisplay();
+            
+            if (this.sleepTimer.remainingChapters <= 0) {
+                this.onSleepTimerEnd();
+            }
+        }
+    },
+    
+    onSleepTimerEnd() {
+        console.log('[TTS] Sleep timer ended');
+        this.pause();
+        this.clearSleepTimer();
+        this.updateStatus('Sleep timer: Playback paused');
+        
+        // Show notification if supported
+        if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('LibRead', {
+                body: 'Sleep timer ended. Playback paused.',
+                icon: '/favicon.ico'
+            });
+        }
+    },
+    
+    clearSleepTimer() {
+        if (this.sleepTimer.timeout) {
+            clearTimeout(this.sleepTimer.timeout);
+            this.sleepTimer.timeout = null;
+        }
+        this.sleepTimer.active = false;
+        this.sleepTimer.endTime = null;
+        this.sleepTimer.remainingChapters = 0;
+        this.sleepTimer.mode = null;
+        
+        try {
+            localStorage.removeItem('ttsSleepTimer');
+        } catch (e) {}
+        
+        this.updateSleepTimerDisplay();
+    },
+    
+    getSleepTimerRemaining() {
+        if (!this.sleepTimer.active) return null;
+        
+        if (this.sleepTimer.mode === 'time') {
+            const remaining = Math.max(0, this.sleepTimer.endTime - Date.now());
+            return {
+                mode: 'time',
+                minutes: Math.ceil(remaining / 60000),
+                seconds: Math.ceil(remaining / 1000)
+            };
+        } else if (this.sleepTimer.mode === 'chapters') {
+            return {
+                mode: 'chapters',
+                chapters: this.sleepTimer.remainingChapters
+            };
+        }
+        return null;
+    },
+    
+    updateSleepTimerDisplay() {
+        const display = document.getElementById('sleepTimerDisplay');
+        if (!display) return;
+        
+        const remaining = this.getSleepTimerRemaining();
+        if (!remaining) {
+            display.textContent = 'Off';
+            display.classList.remove('active');
+            return;
+        }
+        
+        display.classList.add('active');
+        if (remaining.mode === 'time') {
+            display.textContent = remaining.minutes + 'm';
+        } else {
+            display.textContent = remaining.chapters + ' ch';
+        }
+    },
+    
+    // ==================== VOICE PREFERENCES PER LANGUAGE ====================
+    
+    loadVoicePreferences() {
+        try {
+            const saved = localStorage.getItem('ttsVoicePreferences');
+            if (saved) {
+                this.voicePreferences = JSON.parse(saved);
+                console.log('[TTS] Loaded voice preferences:', Object.keys(this.voicePreferences).length, 'languages');
+            }
+        } catch (e) {
+            console.warn('[TTS] Failed to load voice preferences:', e);
+        }
+    },
+    
+    saveVoicePreference(lang, voiceId) {
+        if (!lang || !voiceId) return;
+        
+        // Normalize language code (e.g., 'en-US' -> 'en')
+        const baseLang = lang.split('-')[0].toLowerCase();
+        
+        this.voicePreferences[baseLang] = voiceId;
+        
+        try {
+            localStorage.setItem('ttsVoicePreferences', JSON.stringify(this.voicePreferences));
+        } catch (e) {
+            console.warn('[TTS] Failed to save voice preference:', e);
+        }
+        
+        console.log('[TTS] Saved voice preference for', baseLang, ':', voiceId);
+    },
+    
+    getPreferredVoice(lang) {
+        if (!lang) return null;
+        const baseLang = lang.split('-')[0].toLowerCase();
+        return this.voicePreferences[baseLang] || null;
+    },
+    
+    async setVoice(voiceId, lang) {
+        this.currentVoice = voiceId;
+        if (lang) {
+            this.saveVoicePreference(lang, voiceId);
+        }
+        
+        // Update settings if using Edge TTS
+        if (this.getEngine() === 'edge') {
+            const settings = this.loadTTSSettings();
+            settings.edgeVoice = voiceId;
+            this.saveTTSSettings(settings);
+        }
+        
+        console.log('[TTS] Voice set to:', voiceId);
+    },
+    
+    loadTTSSettings() {
+        try {
+            const saved = localStorage.getItem('ttsSettings');
+            return saved ? JSON.parse(saved) : {};
+        } catch (e) {
+            return {};
+        }
+    },
+    
+    saveTTSSettings(settings) {
+        try {
+            localStorage.setItem('ttsSettings', JSON.stringify(settings));
+        } catch (e) {
+            console.warn('[TTS] Failed to save settings:', e);
+        }
+    },
+    
+    // ==================== PITCH CONTROL ====================
+    
+    loadPitchFromSettings() {
+        try {
+            const saved = localStorage.getItem('ttsPitch');
+            if (saved) {
+                this.pitch = parseFloat(saved);
+                const slider = document.getElementById('ttsPitchSlider');
+                if (slider) slider.value = this.pitch;
+                this.updatePitchDisplay();
+            }
+        } catch (e) {
+            console.warn('[TTS] Failed to load pitch:', e);
+        }
+    },
+    
+    setPitch(value) {
+        this.pitch = Math.max(0.5, Math.min(2.0, parseFloat(value)));
+        
+        try {
+            localStorage.setItem('ttsPitch', this.pitch.toString());
+        } catch (e) {}
+        
+        this.updatePitchDisplay();
+        console.log('[TTS] Pitch set to:', this.pitch);
+    },
+    
+    updatePitchDisplay() {
+        const display = document.getElementById('ttsPitchDisplay');
+        if (display) {
+            display.textContent = this.pitch.toFixed(1) + 'x';
+        }
+    },
+    
+    // ==================== VOICE SAMPLE PREVIEW ====================
+    
+    async previewVoice(voiceId, engine = 'edge') {
+        const sampleText = "This is a sample of the selected voice. How does it sound?";
+        
+        try {
+            this.updateStatus('Playing voice sample...');
+            
+            if (engine === 'webSpeech') {
+                await this.previewWebSpeechVoice(voiceId, sampleText);
+            } else {
+                // Use server TTS for preview
+                const options = { voice: voiceId };
+                const result = await this.client.synthesizeChunked(sampleText, options);
+                
+                // Play the first segment only
+                const status = await this.client.getChunkedJobStatus(result.job_ids);
+                const segments = status.segments || [];
+                
+                // Wait for first segment
+                let attempts = 0;
+                while (attempts < 20) {
+                    const checkStatus = await this.client.getChunkedJobStatus(result.job_ids);
+                    const readySegment = (checkStatus.segments || []).find(s => 
+                        s.status === 'ready' || s.status === 'completed'
+                    );
+                    if (readySegment) {
+                        const url = this.client.getSegmentUrl(result.job_ids[0], readySegment.segment_id || readySegment.id);
+                        await this.playPreviewAudio(url);
+                        break;
+                    }
+                    await new Promise(r => setTimeout(r, 250));
+                    attempts++;
+                }
+                
+                // Cancel remaining synthesis
+                for (const jobId of result.job_ids) {
+                    try { await this.client.cancelJob(jobId); } catch (e) {}
+                }
+            }
+            
+            this.updateStatus('Ready');
+        } catch (e) {
+            console.error('[TTS] Voice preview error:', e);
+            this.updateStatus('Preview failed');
+        }
+    },
+    
+    async playPreviewAudio(url) {
+        return new Promise((resolve, reject) => {
+            const audio = new Audio(url);
+            audio.volume = this.volume;
+            audio.onended = resolve;
+            audio.onerror = reject;
+            audio.play().catch(reject);
+            
+            // Auto-stop after 5 seconds max
+            setTimeout(() => {
+                audio.pause();
+                resolve();
+            }, 5000);
+        });
+    },
+    
+    previewWebSpeechVoice(voiceId, text) {
+        return new Promise((resolve, reject) => {
+            if (!window.speechSynthesis) {
+                reject(new Error('WebSpeech not supported'));
+                return;
+            }
+            
+            const utterance = new SpeechSynthesisUtterance(text);
+            const voices = speechSynthesis.getVoices();
+            const voice = voices.find(v => v.voiceURI === voiceId || v.name === voiceId);
+            
+            if (voice) utterance.voice = voice;
+            utterance.rate = this.speed;
+            utterance.pitch = this.pitch;
+            utterance.volume = this.volume;
+            
+            utterance.onend = resolve;
+            utterance.onerror = (e) => reject(e);
+            
+            speechSynthesis.speak(utterance);
+            
+            // Auto-stop after 5 seconds
+            setTimeout(() => {
+                speechSynthesis.cancel();
+                resolve();
+            }, 5000);
+        });
+    },
+    
+    // ==================== WEBSPEECH FALLBACK ====================
+    
+    initWebSpeechFallback() {
+        if (!window.speechSynthesis) {
+            console.log('[TTS] WebSpeech API not available');
+            return;
+        }
+        
+        this.engines.webSpeech = {
+            name: 'webSpeech',
+            speak: (text, options) => this.webSpeechSpeak(text, options),
+            pause: () => speechSynthesis.pause(),
+            resume: () => speechSynthesis.resume(),
+            stop: () => speechSynthesis.cancel(),
+            getVoices: () => speechSynthesis.getVoices()
+        };
+        
+        // Load voices (may be async on some browsers)
+        if (speechSynthesis.onvoiceschanged !== undefined) {
+            speechSynthesis.onvoiceschanged = () => {
+                this.webSpeechVoices = speechSynthesis.getVoices();
+                console.log('[TTS] WebSpeech voices loaded:', this.webSpeechVoices.length);
+            };
+        }
+        this.webSpeechVoices = speechSynthesis.getVoices();
+        
+        console.log('[TTS] WebSpeech fallback initialized');
+    },
+    
+    webSpeechVoices: [],
+    
+    async webSpeechSpeak(text, options = {}) {
+        return new Promise((resolve, reject) => {
+            if (!window.speechSynthesis) {
+                reject(new Error('WebSpeech not supported'));
+                return;
+            }
+            
+            // Cancel any ongoing speech
+            speechSynthesis.cancel();
+            
+            const utterance = new SpeechSynthesisUtterance(text);
+            
+            // Set voice if specified
+            if (options.voice) {
+                const voice = this.webSpeechVoices.find(v => 
+                    v.voiceURI === options.voice || v.name === options.voice
+                );
+                if (voice) utterance.voice = voice;
+            }
+            
+            utterance.rate = options.rate || this.speed;
+            utterance.pitch = options.pitch || this.pitch;
+            utterance.volume = options.volume || this.volume;
+            
+            // Word boundary events for highlighting
+            if (options.onBoundary) {
+                utterance.onboundary = (e) => {
+                    if (e.name === 'word') {
+                        options.onBoundary({
+                            charIndex: e.charIndex,
+                            charLength: e.charLength || 1
+                        });
+                    }
+                };
+            }
+            
+            utterance.onend = () => {
+                this.webSpeechUtterance = null;
+                resolve();
+            };
+            
+            utterance.onerror = (e) => {
+                this.webSpeechUtterance = null;
+                reject(e);
+            };
+            
+            this.webSpeechUtterance = utterance;
+            speechSynthesis.speak(utterance);
+        });
+    },
+    
+    async fallbackToWebSpeech(text) {
+        console.log('[TTS] Falling back to WebSpeech');
+        this.activeEngine = 'webSpeech';
+        this.updateStatus('Using browser TTS...');
+        
+        try {
+            this.setState(TTSState.PLAYING);
+            
+            // Split text into paragraphs for highlighting
+            const paragraphs = text.split(/\n\n+/);
+            
+            for (let i = 0; i < paragraphs.length; i++) {
+                if (this.state !== TTSState.PLAYING) break;
+                
+                this.updateHighlighting(i);
+                await this.webSpeechSpeak(paragraphs[i], {
+                    rate: this.speed,
+                    pitch: this.pitch,
+                    volume: this.volume
+                });
+            }
+            
+            if (this.state === TTSState.PLAYING) {
+                this.onPlaybackComplete();
+            }
+        } catch (e) {
+            console.error('[TTS] WebSpeech error:', e);
+            this.setState(TTSState.ERROR);
+            this.updateStatus('TTS failed');
+        }
+    },
+    
+    // ==================== POSITION BOOKMARKING ====================
+    
+    loadSavedPosition() {
+        if (!currentLibraryEntry) return;
+        
+        try {
+            const key = `ttsPosition_${currentLibraryEntry.id}`;
+            const saved = localStorage.getItem(key);
+            if (saved) {
+                this.savedPosition = JSON.parse(saved);
+                console.log('[TTS] Loaded saved position for book');
+            }
+        } catch (e) {
+            console.warn('[TTS] Failed to load saved position:', e);
+        }
+    },
+    
+    savePosition() {
+        if (!currentLibraryEntry) return;
+        
+        const position = {
+            bookId: currentLibraryEntry.id,
+            chapterIndex: state.currentChapterIndex,
+            segmentIndex: this.currentSegmentIndex,
+            textOffset: this.getCurrentTextOffset(),
+            timestamp: Date.now()
+        };
+        
+        this.savedPosition = position;
+        
+        try {
+            const key = `ttsPosition_${currentLibraryEntry.id}`;
+            localStorage.setItem(key, JSON.stringify(position));
+        } catch (e) {
+            console.warn('[TTS] Failed to save position:', e);
+        }
+    },
+    
+    getCurrentTextOffset() {
+        if (!this.textChunks || this.currentChunkIndex < 0) return 0;
+        
+        // Calculate character offset based on current chunk
+        let offset = 0;
+        for (let i = 0; i < this.currentChunkIndex && i < this.textChunks.length; i++) {
+            offset += this.textChunks[i].length;
+        }
+        return offset;
+    },
+    
+    hasSavedPosition() {
+        if (!currentLibraryEntry || !this.savedPosition) return false;
+        return this.savedPosition.bookId === currentLibraryEntry.id;
+    },
+    
+    async resumeFromSavedPosition() {
+        if (!this.hasSavedPosition()) {
+            return this.play();
+        }
+        
+        const pos = this.savedPosition;
+        console.log('[TTS] Resuming from saved position:', pos);
+        
+        // Navigate to saved chapter if different
+        if (pos.chapterIndex !== state.currentChapterIndex) {
+            await loadChapter(pos.chapterIndex);
+            // Wait for chapter to load
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        
+        // Start playback (will start from beginning of chapter)
+        // TODO: Implement segment-level seeking
+        await this.play();
+        
+        // Clear saved position after resuming
+        this.clearSavedPosition();
+    },
+    
+    clearSavedPosition() {
+        if (!currentLibraryEntry) return;
+        
+        this.savedPosition = null;
+        try {
+            const key = `ttsPosition_${currentLibraryEntry.id}`;
+            localStorage.removeItem(key);
+        } catch (e) {}
+    },
+    
+    // ==================== AUDIO CACHING (OFFLINE) ====================
+    
+    async initAudioCache() {
+        if (!('caches' in window)) {
+            console.log('[TTS] Cache API not available');
+            return;
+        }
+        
+        try {
+            this.audioCache = await caches.open(this.cacheName);
+            console.log('[TTS] Audio cache initialized');
+        } catch (e) {
+            console.warn('[TTS] Failed to initialize audio cache:', e);
+        }
+    },
+    
+    async cacheAudioSegment(url, audioData) {
+        if (!this.audioCache) return;
+        
+        try {
+            const response = new Response(audioData, {
+                headers: { 'Content-Type': 'audio/wav' }
+            });
+            await this.audioCache.put(url, response);
+        } catch (e) {
+            console.warn('[TTS] Failed to cache audio:', e);
+        }
+    },
+    
+    async getCachedAudio(url) {
+        if (!this.audioCache) return null;
+        
+        try {
+            const response = await this.audioCache.match(url);
+            if (response) {
+                return await response.arrayBuffer();
+            }
+        } catch (e) {
+            console.warn('[TTS] Failed to get cached audio:', e);
+        }
+        return null;
+    },
+    
+    async prefetchChapters(startIndex, count = 2) {
+        if (this.isPrefetching || !this.client) return;
+        
+        this.isPrefetching = true;
+        console.log('[TTS] Prefetching', count, 'chapters starting from', startIndex);
+        
+        try {
+            for (let i = 0; i < count; i++) {
+                const chapterIdx = startIndex + i;
+                if (chapterIdx >= state.chapters.length) break;
+                
+                const chapter = state.chapters[chapterIdx];
+                if (!chapter) continue;
+                
+                // Check if already cached
+                const cacheKey = `tts_chapter_${currentLibraryEntry?.id}_${chapterIdx}`;
+                const cached = await this.getCachedAudio(cacheKey);
+                if (cached) {
+                    console.log('[TTS] Chapter', chapterIdx, 'already cached');
+                    continue;
+                }
+                
+                // Fetch chapter content
+                const response = await fetch(`${PROXY_BASE}/proxy?url=${encodeURIComponent(chapter.url)}`);
+                const html = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                const content = parseChapterContent(doc);
+                
+                if (!content || content.length < 50) continue;
+                
+                // Synthesize and cache
+                const text = this.preprocessText(content);
+                const result = await this.client.synthesizeChunked(text, this.getSynthesisOptions());
+                
+                // Wait for synthesis to complete
+                let complete = false;
+                let attempts = 0;
+                while (!complete && attempts < 60) {
+                    const status = await this.client.getChunkedJobStatus(result.job_ids);
+                    complete = status.overall_status === 'complete';
+                    if (!complete) {
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
+                    attempts++;
+                }
+                
+                // Cache the audio URLs for later retrieval
+                if (complete) {
+                    try {
+                        localStorage.setItem(cacheKey, JSON.stringify({
+                            jobIds: result.job_ids,
+                            timestamp: Date.now()
+                        }));
+                        console.log('[TTS] Cached chapter', chapterIdx);
+                    } catch (e) {}
+                }
+            }
+        } catch (e) {
+            console.error('[TTS] Prefetch error:', e);
+        } finally {
+            this.isPrefetching = false;
+        }
+    },
+    
+    async clearAudioCache() {
+        if (!('caches' in window)) return;
+        
+        try {
+            await caches.delete(this.cacheName);
+            this.audioCache = await caches.open(this.cacheName);
+            console.log('[TTS] Audio cache cleared');
+        } catch (e) {
+            console.warn('[TTS] Failed to clear cache:', e);
+        }
+    },
+    
+    // ==================== WORD-LEVEL HIGHLIGHTING ====================
+    
+    // Parse text into words with character offsets
+    parseTextIntoWords(text) {
+        const words = [];
+        const regex = /\S+/g;
+        let match;
+        
+        while ((match = regex.exec(text)) !== null) {
+            words.push({
+                text: match[0],
+                start: match.index,
+                end: match.index + match[0].length
+            });
+        }
+        
+        return words;
+    },
+    
+    // Highlight specific word by character offset
+    highlightWordAtOffset(offset) {
+        const chapterContent = document.getElementById('chapterContent');
+        if (!chapterContent) return;
+        
+        // Find the word at this offset
+        const text = this.originalText || '';
+        const words = this.parseTextIntoWords(text);
+        const currentWord = words.find(w => offset >= w.start && offset < w.end);
+        
+        if (!currentWord) return;
+        
+        // Find corresponding DOM element
+        const walker = document.createTreeWalker(
+            chapterContent,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+        
+        let charCount = 0;
+        let node;
+        
+        while (node = walker.nextNode()) {
+            const nodeLength = node.textContent.length;
+            
+            if (charCount + nodeLength > currentWord.start) {
+                // Found the node containing our word
+                const localStart = currentWord.start - charCount;
+                const localEnd = Math.min(currentWord.end - charCount, nodeLength);
+                
+                // Create range and highlight
+                try {
+                    const range = document.createRange();
+                    range.setStart(node, localStart);
+                    range.setEnd(node, localEnd);
+                    
+                    // Remove previous word highlight
+                    const oldHighlight = document.querySelector('.tts-word-highlight');
+                    if (oldHighlight) {
+                        const parent = oldHighlight.parentNode;
+                        while (oldHighlight.firstChild) {
+                            parent.insertBefore(oldHighlight.firstChild, oldHighlight);
+                        }
+                        parent.removeChild(oldHighlight);
+                    }
+                    
+                    // Add new highlight
+                    const span = document.createElement('span');
+                    span.className = 'tts-word-highlight';
+                    range.surroundContents(span);
+                    
+                    // Scroll into view if needed
+                    span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                } catch (e) {
+                    // Range manipulation can fail with complex DOM
+                    console.warn('[TTS] Word highlight failed:', e);
+                }
+                
+                break;
+            }
+            
+            charCount += nodeLength;
+        }
+    },
+    
+    clearWordHighlight() {
+        const highlight = document.querySelector('.tts-word-highlight');
+        if (highlight) {
+            const parent = highlight.parentNode;
+            while (highlight.firstChild) {
+                parent.insertBefore(highlight.firstChild, highlight);
+            }
+            parent.removeChild(highlight);
+        }
+    },
+    
+    onPlaybackComplete() {
+        this.setState(TTSState.STOPPED);
+        this.clearHighlighting();
+        this.clearWordHighlight();
+        this.stopProgressTracking();
+        
+        // Save position
+        this.savePosition();
+        
+        // Check sleep timer (chapters mode)
+        this.onChapterComplete();
+        
+        // Auto-play next chapter if enabled
+        if (this.autoplayNext && this.sleepTimer.active === false) {
+            console.log('[TTS] Auto-playing next chapter');
+            if (state.currentChapterIndex < state.chapters.length - 1) {
+                navigateChapter(1);
+                setTimeout(() => this.play(), 1000);
+            } else {
+                this.updateStatus('End of book');
+            }
+        } else {
+            this.updateStatus('Complete');
+        }
     },
     
     // Set up clickable seekbar for seeking within audio
@@ -769,15 +1682,15 @@ const ttsManager = {
         try {
             await this.resumeAudioContext();
         } catch (error) {
+            this.setState(TTSState.ERROR);
             this.updateStatus('Audio not supported');
             return;
         }
         
         // Resume from pause - reschedule remaining segments
-        if (this.isPaused && this.segmentQueue.length > 0) {
+        if (this.state === TTSState.PAUSED && this.segmentQueue.length > 0) {
             console.log('[TTS] Resuming playback with', this.segmentQueue.length, 'segments in queue');
-            this.isPaused = false;
-            this.isPlaying = true;
+            this.setState(TTSState.PLAYING);
             this.nextScheduledTime = this.audioContext.currentTime + 0.05; // Small delay to settle
             this.scheduleNextSegments();
             this.updateUI();
@@ -843,6 +1756,9 @@ const ttsManager = {
             const synthOptions = this.getSynthesisOptions();
             console.log('[TTS] Using engine:', this.getEngine(), 'options:', synthOptions);
             
+            // Set loading state
+            this.setState(TTSState.LOADING);
+            
             // Use chunked synthesis to handle long texts and avoid 413 errors
             const result = await this.client.synthesizeChunked(text, synthOptions);
             this.currentJobIds = result.job_ids;
@@ -862,8 +1778,15 @@ const ttsManager = {
             
         } catch (error) {
             console.error('[TTS] Play error:', error);
+            this.setState(TTSState.ERROR);
             this.updateStatus('Error: ' + error.message);
             this.isStreaming = false;
+            
+            // Try WebSpeech fallback if server TTS fails
+            if (this.engines.webSpeech && error.message.includes('fetch')) {
+                console.log('[TTS] Server TTS failed, attempting WebSpeech fallback');
+                this.fallbackToWebSpeech(text);
+            }
         }
     },
 
@@ -1473,7 +2396,7 @@ const ttsManager = {
     },
 
     pause() {
-        if (this.isPlaying && !this.isPaused) {
+        if (this.state === TTSState.PLAYING) {
             // Stop all scheduled sources
             for (const source of this.scheduledSources) {
                 try {
@@ -1485,12 +2408,19 @@ const ttsManager = {
             this.scheduledSources = [];
             this.currentSource = null;
             
+            // Stop WebSpeech if active
+            if (this.activeEngine === 'webSpeech' && speechSynthesis.speaking) {
+                speechSynthesis.pause();
+            }
+            
             // Note: We keep segmentQueue intact so we can resume
             // The segments that were playing will need to be re-queued on resume
             // For simplicity, we just restart from where we left off
             
-            this.isPaused = true;
-            this.isPlaying = false;
+            // Save position for resume functionality
+            this.savePosition();
+            
+            this.setState(TTSState.PAUSED);
             this.updateStatus('Paused');
             this.updateUI();
             console.log('[TTS] Paused at segment', this.currentSegmentIndex + 1);
@@ -1509,8 +2439,11 @@ const ttsManager = {
         this.scheduledSources = [];
         this.currentSource = null;
         
-        this.isPlaying = false;
-        this.isPaused = false;
+        // Stop WebSpeech if active
+        if (this.activeEngine === 'webSpeech' && speechSynthesis.speaking) {
+            speechSynthesis.cancel();
+        }
+        
         this.isStreaming = false;
         this.segmentQueue = [];
         this.preloadedBuffers.clear();
@@ -1529,6 +2462,7 @@ const ttsManager = {
             this.currentJobIds = [];
         }
         
+        this.setState(TTSState.STOPPED);
         this.updateStatus('Stopped');
         this.updateUI();
     },
@@ -4051,3 +4985,169 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Export for use in saveScrollPositionDebounced
 window.progressSync = progressSync;
+
+// ==================== SLEEP TIMER MODAL ====================
+
+function openSleepTimerModal() {
+    const modal = document.getElementById('sleepTimerModal');
+    if (modal) {
+        modal.classList.add('active');
+        updateSleepTimerModalStatus();
+    }
+}
+
+function closeSleepTimerModal() {
+    const modal = document.getElementById('sleepTimerModal');
+    if (modal) {
+        modal.classList.remove('active');
+    }
+}
+
+function updateSleepTimerModalStatus() {
+    const statusEl = document.getElementById('sleepTimerStatus');
+    const cancelBtn = document.getElementById('sleepTimerCancelBtn');
+    if (!statusEl) return;
+    
+    const remaining = ttsManager.getSleepTimerRemaining();
+    if (remaining) {
+        statusEl.classList.add('active');
+        if (remaining.mode === 'time') {
+            statusEl.textContent = `Timer active: ${remaining.minutes} minute${remaining.minutes !== 1 ? 's' : ''} remaining`;
+        } else {
+            statusEl.textContent = `Timer active: ${remaining.chapters} chapter${remaining.chapters !== 1 ? 's' : ''} remaining`;
+        }
+        if (cancelBtn) cancelBtn.style.display = 'block';
+    } else {
+        statusEl.classList.remove('active');
+        statusEl.textContent = 'No timer active';
+        if (cancelBtn) cancelBtn.style.display = 'none';
+    }
+}
+
+// ==================== VOICE SELECTOR MODAL ====================
+
+function openVoiceSelectorModal() {
+    const modal = document.getElementById('voiceSelectorModal');
+    if (modal) {
+        modal.classList.add('active');
+        populateVoiceSelector();
+    }
+}
+
+function closeVoiceSelectorModal() {
+    const modal = document.getElementById('voiceSelectorModal');
+    if (modal) {
+        modal.classList.remove('active');
+    }
+}
+
+async function populateVoiceSelector() {
+    const container = document.getElementById('voiceGroups');
+    if (!container) return;
+    
+    container.innerHTML = '<div class="voice-loading">Loading voices...</div>';
+    
+    try {
+        // Get current engine
+        const engine = ttsManager.getEngine();
+        let voices = [];
+        
+        if (engine === 'edge') {
+            // Fetch Edge TTS voices from server
+            const response = await fetch('/api/tts/voices?engine=edge');
+            if (response.ok) {
+                const data = await response.json();
+                voices = data.voices || [];
+            }
+        } else {
+            // Get Web Speech API voices as fallback
+            voices = speechSynthesis.getVoices().map(v => ({
+                id: v.voiceURI,
+                name: v.name,
+                lang: v.lang,
+                gender: v.name.includes('Female') ? 'Female' : (v.name.includes('Male') ? 'Male' : 'Unknown')
+            }));
+        }
+        
+        if (voices.length === 0) {
+            container.innerHTML = '<div class="voice-loading">No voices available. Try changing TTS engine in settings.</div>';
+            return;
+        }
+        
+        // Group voices by language
+        const grouped = {};
+        voices.forEach(voice => {
+            const lang = voice.lang ? voice.lang.split('-')[0] : 'unknown';
+            const langName = new Intl.DisplayNames(['en'], { type: 'language' }).of(lang) || lang;
+            if (!grouped[langName]) grouped[langName] = [];
+            grouped[langName].push(voice);
+        });
+        
+        // Build HTML
+        let html = '';
+        const currentVoice = ttsManager.currentVoice;
+        
+        Object.keys(grouped).sort().forEach(langName => {
+            html += `<div class="voice-group">
+                <div class="voice-group-header">${langName}</div>
+                <div class="voice-list">`;
+            
+            grouped[langName].forEach(voice => {
+                const isSelected = currentVoice === voice.id;
+                html += `<div class="voice-item ${isSelected ? 'selected' : ''}" 
+                             onclick="selectVoice('${voice.id}', '${voice.lang}')"
+                             data-voice-id="${voice.id}">
+                    <div class="voice-item-info">
+                        <span class="voice-item-name">${voice.name}</span>
+                        <span class="voice-item-meta">${voice.gender || ''} • ${voice.lang}</span>
+                    </div>
+                    <button class="voice-preview-btn" onclick="event.stopPropagation(); ttsManager.previewVoice('${voice.id}')">
+                        Preview
+                    </button>
+                </div>`;
+            });
+            
+            html += '</div></div>';
+        });
+        
+        container.innerHTML = html;
+        
+    } catch (error) {
+        console.error('[Voice Selector] Failed to load voices:', error);
+        container.innerHTML = '<div class="voice-loading">Failed to load voices. Please try again.</div>';
+    }
+}
+
+function selectVoice(voiceId, lang) {
+    // Save preference
+    ttsManager.saveVoicePreference(lang.split('-')[0], voiceId);
+    ttsManager.currentVoice = voiceId;
+    
+    // Update UI
+    document.querySelectorAll('.voice-item').forEach(el => {
+        el.classList.remove('selected');
+        if (el.dataset.voiceId === voiceId) {
+            el.classList.add('selected');
+        }
+    });
+    
+    console.log('[Voice Selector] Selected voice:', voiceId);
+}
+
+function previewSelectedVoice() {
+    const text = document.getElementById('voicePreviewText')?.value || 'Hello, this is a voice preview.';
+    if (ttsManager.currentVoice) {
+        ttsManager.previewVoice(ttsManager.currentVoice, text);
+    }
+}
+
+// ==================== TTS RESUME BANNER ====================
+
+function checkForSavedTTSPosition() {
+    if (ttsManager.hasSavedPosition && ttsManager.hasSavedPosition()) {
+        const banner = document.getElementById('ttsResumeBanner');
+        if (banner) {
+            banner.style.display = 'flex';
+        }
+    }
+}
