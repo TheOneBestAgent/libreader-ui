@@ -3833,12 +3833,8 @@ const annotationManager = {
         
         // Update floating badge
         if (badge) {
-            if (annotationCount > 0) {
-                badge.textContent = annotationCount;
-                badge.style.display = 'flex';
-            } else {
-                badge.style.display = 'none';
-            }
+            badge.textContent = annotationCount;
+            badge.style.display = annotationCount > 0 ? 'flex' : 'none';
         }
         
         if (annotationCount === 0) {
