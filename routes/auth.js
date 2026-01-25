@@ -10,6 +10,13 @@ const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'libread-secret-key-change-in-production';
 const JWT_EXPIRES_IN = '30d';
 
+// Security: Fail fast in production if JWT_SECRET is not properly configured
+if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'libread-secret-key-change-in-production')) {
+    console.error('[SECURITY ERROR] JWT_SECRET must be set in production environment!');
+    console.error('[SECURITY ERROR] Set a strong random secret via JWT_SECRET environment variable.');
+    process.exit(1);
+}
+
 // Password requirements
 const MIN_PASSWORD_LENGTH = 6;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -247,8 +254,8 @@ router.patch('/preferences', authenticateToken, (req, res) => {
             params.push(ttsPreferPhonemes ? 1 : 0);
         }
         if (ttsEngine !== undefined) {
-            // Validate engine value
-            const validEngines = ['piper', 'edge'];
+            // Validate engine value - support all 6 TTS engines
+            const validEngines = ['piper', 'edge', 'wavenet', 'espeak', 'openai', 'web'];
             updates.push('tts_engine = ?');
             params.push(validEngines.includes(ttsEngine) ? ttsEngine : 'piper');
         }

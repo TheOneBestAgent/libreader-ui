@@ -894,17 +894,55 @@
             opacity: 0.6;
         }
 
-        /* Word-level highlight */
+        /* Word-level highlighting (enhanced from Readest) */
+        .tts-word {
+            transition: background-color 0.15s ease-out, color 0.15s ease-out;
+            border-radius: 2px;
+            padding: 0 1px;
+            margin: 0 -1px;
+        }
+
+        .tts-word.tts-word-current {
+            background: linear-gradient(120deg, rgba(255, 215, 0, 0.6) 0%, rgba(255, 165, 0, 0.6) 100%);
+            color: var(--text-dark);
+            animation: tts-word-pulse 0.2s ease-out;
+        }
+
+        .tts-word.tts-word-read {
+            opacity: 0.55;
+        }
+
+        [data-theme="dark"] .tts-word.tts-word-current {
+            background: linear-gradient(120deg, rgba(255, 215, 0, 0.5) 0%, rgba(255, 165, 0, 0.5) 100%);
+        }
+
+        /* Paragraph-level highlighting for TTS */
+        .tts-paragraph {
+            transition: opacity 0.2s ease;
+        }
+
+        .tts-paragraph.tts-paragraph-read {
+            opacity: 0.6;
+        }
+
+        .tts-paragraph.tts-paragraph-current {
+            background: rgba(255, 215, 0, 0.08);
+            border-left: 3px solid var(--accent-gold);
+            padding-left: 1rem;
+            margin-left: -1rem;
+        }
+
+        @keyframes tts-word-pulse {
+            0% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
+        /* Legacy word highlight class for backwards compat */
         .tts-word-highlight {
             background: rgba(255, 200, 0, 0.6);
             border-radius: 2px;
             padding: 0 1px;
-            animation: tts-word-pulse 0.3s ease-out;
-        }
-
-        @keyframes tts-word-pulse {
-            0% { transform: scale(1.1); }
-            100% { transform: scale(1); }
+            animation: tts-word-pulse 0.2s ease-out;
         }
 
         /* Sleep Timer Styles */
@@ -999,9 +1037,9 @@
             background: var(--bg-warm-white);
             border-radius: 12px;
             box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            max-width: 500px;
+            max-width: 550px;
             width: 90%;
-            max-height: 70vh;
+            max-height: 80vh;
             overflow: hidden;
             z-index: 10001;
         }
@@ -1029,21 +1067,71 @@
 
         .voice-selector-content {
             padding: 1rem;
-            max-height: 50vh;
+            max-height: 55vh;
             overflow-y: auto;
         }
 
+        /* Enhanced Voice Groups with Collapsible Accordion */
+        .voice-groups {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
         .voice-group {
-            margin-bottom: 1rem;
+            border: 1px solid var(--border-warm);
+            border-radius: 8px;
+            overflow: hidden;
         }
 
         .voice-group-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            background: var(--bg-cream);
+            cursor: pointer;
+            transition: background 0.2s;
+            user-select: none;
+        }
+
+        .voice-group-header:hover {
+            background: var(--border-warm);
+        }
+
+        .voice-group-title {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
             font-weight: 600;
-            font-size: 0.9rem;
+            font-size: 0.95rem;
+            color: var(--text-dark);
+        }
+
+        .voice-group-count {
+            font-size: 0.8rem;
             color: var(--text-muted);
-            margin-bottom: 0.5rem;
-            padding-bottom: 0.3rem;
-            border-bottom: 1px solid var(--border-warm);
+            font-weight: normal;
+        }
+
+        .voice-group-chevron {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            transition: transform 0.2s;
+        }
+
+        .voice-group.expanded .voice-group-chevron {
+            transform: rotate(180deg);
+        }
+
+        .voice-group-content {
+            display: none;
+            padding: 0.5rem;
+            background: var(--bg-warm-white);
+        }
+
+        .voice-group.expanded .voice-group-content {
+            display: block;
         }
 
         .voice-list {
@@ -1056,7 +1144,7 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 0.5rem 0.75rem;
+            padding: 0.6rem 0.75rem;
             background: var(--bg-cream);
             border-radius: 6px;
             cursor: pointer;
@@ -2713,7 +2801,10 @@
     <!-- Sync Status Indicator -->
     <div class="sync-indicator" id="syncIndicator"></div>
 
+    <!-- Security: DOMPurify for HTML sanitization -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js" integrity="sha512-x0bvX4wrB7TrIbk7wC15bKw9l0T0VQR9/8cPBNvSgfzWjHnF8j6X3QS5t/2NxnLEf0bWS5FN8D0W1lqJM9T+WQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="auth-client.js"></script>
+    <script src="tts-utils.js"></script>
     <script src="tts-client.js"></script>
     <script src="app.js"></script>
 </body>

@@ -12,7 +12,11 @@ class TTSClient {
     // Available TTS engines
     static ENGINES = {
         PIPER: 'piper',      // PronounceX/Piper - supports custom phonemes
-        EDGE: 'edge'         // Microsoft Edge TTS - high quality, no phoneme support
+        EDGE: 'edge',        // Microsoft Edge TTS - high quality, no phoneme support
+        WAVENET: 'wavenet',  // Google WaveNet - neural TTS, $4/1M chars
+        ESPEAK: 'espeak',    // eSpeak NG - lightweight, offline capable
+        OPENAI: 'openai',    // OpenAI TTS - premium neural voices
+        WEB_SPEECH: 'web'    // Browser's built-in Web Speech API
     };
 
     constructor(apiBase = '/api/tts', engine = TTSClient.ENGINES.PIPER) {
@@ -26,10 +30,29 @@ class TTSClient {
     
     // Set the TTS engine to use
     setEngine(engine) {
-        if (engine === 'edge' || engine === 'edge-tts') {
-            this.engine = TTSClient.ENGINES.EDGE;
-        } else {
-            this.engine = TTSClient.ENGINES.PIPER;
+        switch (engine) {
+            case 'edge':
+            case 'edge-tts':
+                this.engine = TTSClient.ENGINES.EDGE;
+                break;
+            case 'wavenet':
+            case 'google':
+            case 'google-tts':
+                this.engine = TTSClient.ENGINES.WAVENET;
+                break;
+            case 'espeak':
+            case 'espeak-ng':
+                this.engine = TTSClient.ENGINES.ESPEAK;
+                break;
+            case 'openai':
+                this.engine = TTSClient.ENGINES.OPENAI;
+                break;
+            case 'web':
+            case 'web-speech':
+                this.engine = TTSClient.ENGINES.WEB_SPEECH;
+                break;
+            default:
+                this.engine = TTSClient.ENGINES.PIPER;
         }
         console.log('[TTS] Engine set to:', this.engine);
     }
@@ -41,80 +64,116 @@ class TTSClient {
     
     // Check if current engine supports phonemes
     supportsPhonemes() {
-        return this.engine === TTSClient.ENGINES.PIPER;
+        // Piper and eSpeak support custom phonemes
+        // Google WaveNet supports SSML phoneme tags
+        return this.engine === TTSClient.ENGINES.PIPER || 
+               this.engine === TTSClient.ENGINES.ESPEAK ||
+               this.engine === TTSClient.ENGINES.WAVENET;
     }
 
+    // Maximum chunk sizes for different engines
+    static MAX_CHUNK_SIZE_WAVENET = 5000;  // Google TTS API limit
+    static MAX_CHUNK_SIZE_ESPEAK = 2000;
+    static MAX_CHUNK_SIZE_OPENAI = 4096;
+    static MAX_CHUNK_SIZE_WEB_SPEECH = 5000; // Limited by browser TTS constraints
+    
     // Get appropriate chunk size for an engine
     static getMaxChunkSize(engine) {
-        return engine === TTSClient.ENGINES.EDGE 
-            ? TTSClient.MAX_CHUNK_SIZE_EDGE 
-            : TTSClient.MAX_CHUNK_SIZE_PIPER;
+        switch (engine) {
+            case TTSClient.ENGINES.EDGE:
+                return TTSClient.MAX_CHUNK_SIZE_EDGE;
+            case TTSClient.ENGINES.WAVENET:
+                return TTSClient.MAX_CHUNK_SIZE_WAVENET;
+            case TTSClient.ENGINES.ESPEAK:
+                return TTSClient.MAX_CHUNK_SIZE_ESPEAK;
+            case TTSClient.ENGINES.OPENAI:
+                return TTSClient.MAX_CHUNK_SIZE_OPENAI;
+            case TTSClient.ENGINES.WEB_SPEECH:
+                return TTSClient.MAX_CHUNK_SIZE_WEB_SPEECH;
+            case TTSClient.ENGINES.PIPER:
+            default:
+                return TTSClient.MAX_CHUNK_SIZE_PIPER;
+        }
     }
 
     // Split text into chunks at sentence boundaries
     // Returns array of text chunks, each under the max size for the engine
+    // Optimized: O(n) using index-based slicing instead of repeated substring
     static chunkText(text, maxSize = TTSClient.MAX_CHUNK_SIZE_PIPER) {
         if (text.length <= maxSize) {
             return [text];
         }
 
         const chunks = [];
-        let remaining = text;
+        let startIndex = 0;
 
-        while (remaining.length > 0) {
-            if (remaining.length <= maxSize) {
-                chunks.push(remaining.trim());
+        while (startIndex < text.length) {
+            // Skip leading whitespace
+            while (startIndex < text.length && /\s/.test(text[startIndex])) {
+                startIndex++;
+            }
+            
+            if (startIndex >= text.length) break;
+
+            const remainingLength = text.length - startIndex;
+            
+            if (remainingLength <= maxSize) {
+                chunks.push(text.substring(startIndex).trim());
                 break;
             }
 
-            // Find a good break point within maxSize
-            let breakPoint = maxSize;
-            const searchArea = remaining.substring(0, maxSize);
+            // Find a good break point within maxSize from startIndex
+            const endBoundary = startIndex + maxSize;
+            const searchArea = text.substring(startIndex, endBoundary);
+            let breakOffset = maxSize;
 
             // Priority 1: Break at paragraph (double newline)
             const paragraphBreak = searchArea.lastIndexOf('\n\n');
             if (paragraphBreak > maxSize * 0.5) {
-                breakPoint = paragraphBreak + 2;
+                breakOffset = paragraphBreak + 2;
             } else {
                 // Priority 2: Break at sentence end (.!?)
                 const sentenceMatch = searchArea.match(/[.!?]["'\u201d\u2019]?\s+(?=[A-Z])/g);
                 if (sentenceMatch) {
                     const lastSentenceEnd = searchArea.lastIndexOf(sentenceMatch[sentenceMatch.length - 1]);
                     if (lastSentenceEnd > maxSize * 0.3) {
-                        breakPoint = lastSentenceEnd + sentenceMatch[sentenceMatch.length - 1].length;
+                        breakOffset = lastSentenceEnd + sentenceMatch[sentenceMatch.length - 1].length;
                     }
                 }
                 
                 // Priority 3: Break at single newline
-                if (breakPoint === maxSize) {
+                if (breakOffset === maxSize) {
                     const newlineBreak = searchArea.lastIndexOf('\n');
                     if (newlineBreak > maxSize * 0.5) {
-                        breakPoint = newlineBreak + 1;
+                        breakOffset = newlineBreak + 1;
                     }
                 }
 
                 // Priority 4: Break at comma or semicolon
-                if (breakPoint === maxSize) {
+                if (breakOffset === maxSize) {
                     const clauseBreak = Math.max(
                         searchArea.lastIndexOf(', '),
                         searchArea.lastIndexOf('; ')
                     );
                     if (clauseBreak > maxSize * 0.5) {
-                        breakPoint = clauseBreak + 2;
+                        breakOffset = clauseBreak + 2;
                     }
                 }
 
                 // Priority 5: Break at space (last resort)
-                if (breakPoint === maxSize) {
+                if (breakOffset === maxSize) {
                     const spaceBreak = searchArea.lastIndexOf(' ');
                     if (spaceBreak > maxSize * 0.3) {
-                        breakPoint = spaceBreak + 1;
+                        breakOffset = spaceBreak + 1;
                     }
                 }
             }
 
-            chunks.push(remaining.substring(0, breakPoint).trim());
-            remaining = remaining.substring(breakPoint).trim();
+            const chunk = text.substring(startIndex, startIndex + breakOffset).trim();
+            if (chunk.length > 0) {
+                chunks.push(chunk);
+            }
+            startIndex += breakOffset;
         }
 
         return chunks.filter(chunk => chunk.length > 0);
@@ -128,7 +187,7 @@ class TTSClient {
             text: text,
             engine: this.engine,  // Tell server which TTS engine to use
             // Disable phonemes - glow-tts model produces better output with direct text
-            // Note: edge-tts ignores this parameter (doesn't support phonemes)
+            // Note: edge-tts and wavenet ignore this parameter (don't support custom phonemes)
             prefer_phonemes: options.preferPhonemes === true ? true : false
         };
 
@@ -145,12 +204,37 @@ class TTSClient {
         if (options.voice) {
             payload.voice = options.voice;
         }
+        
+        // For Google WaveNet: voice and audio options
+        if (this.engine === TTSClient.ENGINES.WAVENET) {
+            if (options.languageCode) {
+                payload.languageCode = options.languageCode;
+            }
+            if (options.voiceName) {
+                payload.voiceName = options.voiceName;
+            }
+            if (options.ssmlGender) {
+                payload.ssmlGender = options.ssmlGender;
+            }
+            if (options.audioEncoding) {
+                payload.audioEncoding = options.audioEncoding;
+            }
+            if (options.speakingRate !== undefined) {
+                payload.speakingRate = options.speakingRate;
+            }
+            if (options.pitch !== undefined) {
+                payload.pitch = options.pitch;
+            }
+            if (options.volumeGainDb !== undefined) {
+                payload.volumeGainDb = options.volumeGainDb;
+            }
+        }
 
         console.log('[TTS] Submitting synthesis job:', {
             engine: this.engine,
             textLength: text.length,
             model: payload.model_id,
-            voice: payload.voice,
+            voice: payload.voice || payload.voiceName,
             preferPhonemes: payload.prefer_phonemes
         });
 
@@ -179,48 +263,54 @@ class TTSClient {
     // Create TTS synthesis jobs for long text, automatically chunking if needed
     // Returns an object with job_ids array and chunk info for coordinated playback
     // NOTE: Edge-TTS handles long text internally, so we don't chunk for it
+    // NOTE: Web Speech API should use WebSpeechEngine from tts-utils.js, not this client
     async synthesizeChunked(text, options = {}) {
+        // Web Speech API: Should use WebSpeechEngine class instead of TTSClient
+        if (this.engine === TTSClient.ENGINES.WEB_SPEECH) {
+            throw new Error('Web Speech API should use WebSpeechEngine from tts-utils.js, not TTSClient');
+        }
+
         // Edge-TTS: Send full text as single job (no chunking needed)
         // Edge-TTS handles long text well internally
         if (this.engine === TTSClient.ENGINES.EDGE) {
             console.log('[TTS] Edge-TTS: Sending full text as single job,', text.length, 'chars');
-            const result = await this.synthesize(text, options);
-            this.currentJobIds = [result.job_id];
-            return {
-                job_ids: [result.job_id],
-                chunks: [{
-                    index: 0,
-                    job_id: result.job_id,
-                    length: text.length
-                }],
-                total_chunks: 1,
-                is_chunked: false
-            };
+            return await this._synthesizeSingleJob(text, options);
         }
         
-        // Piper: Use chunking to avoid 413 errors (20KB API limit)
-        const maxChunkSize = TTSClient.MAX_CHUNK_SIZE_PIPER;
+        // Get engine-specific chunk size
+        const maxChunkSize = TTSClient.getMaxChunkSize(this.engine);
         const chunks = TTSClient.chunkText(text, maxChunkSize);
         
-        console.log('[TTS] Piper: Synthesizing in', chunks.length, 'chunk(s), total length:', text.length);
+        const engineName = this.engine.toUpperCase();
+        console.log('[TTS]', engineName + ': Synthesizing in', chunks.length, 'chunk(s), total length:', text.length);
         
         // Single chunk - use regular synthesis
         if (chunks.length === 1) {
-            const result = await this.synthesize(chunks[0], options);
-            this.currentJobIds = [result.job_id];
-            return {
-                job_ids: [result.job_id],
-                chunks: [{
-                    index: 0,
-                    job_id: result.job_id,
-                    length: chunks[0].length
-                }],
-                total_chunks: 1,
-                is_chunked: false
-            };
+            return await this._synthesizeSingleJob(chunks[0], options);
         }
 
         // Multiple chunks - create jobs for each
+        return await this._synthesizeMultipleJobs(chunks, options);
+    }
+
+    // Helper: Synthesize single job (no chunking)
+    async _synthesizeSingleJob(text, options) {
+        const result = await this.synthesize(text, options);
+        this.currentJobIds = [result.job_id];
+        return {
+            job_ids: [result.job_id],
+            chunks: [{
+                index: 0,
+                job_id: result.job_id,
+                length: text.length
+            }],
+            total_chunks: 1,
+            is_chunked: false
+        };
+    }
+
+    // Helper: Synthesize multiple jobs (with chunking)
+    async _synthesizeMultipleJobs(chunks, options) {
         const jobs = [];
         this.currentJobIds = [];
 
@@ -374,13 +464,15 @@ class TTSClient {
     }
 
     // Cancel a job
-    // Maps to: POST /v1/tts/jobs/{job_id}/cancel or DELETE /v1/tts/jobs/{job_id}
+    // Different engines use different cancellation methods:
+    // - Edge-TTS: DELETE /v1/tts/jobs/{job_id}
+    // - Others: POST /v1/tts/jobs/{job_id}/cancel
     async cancelJob(jobId) {
         console.log('[TTS] Cancelling job:', jobId);
         
         try {
-            // Edge-TTS uses DELETE, Piper uses POST to /cancel
-            if (this.engine === TTSClient.ENGINES.EDGE) {
+            // Edge-TTS and OpenAI use DELETE, others use POST to /cancel
+            if (this.engine === TTSClient.ENGINES.EDGE || this.engine === TTSClient.ENGINES.OPENAI) {
                 const response = await fetch(this.apiBase + '/v1/tts/jobs/' + jobId + '?engine=' + this.engine, {
                     method: 'DELETE'
                 });
@@ -417,17 +509,37 @@ class TTSClient {
         return await response.json();
     }
 
-    // Get merged audio URL
-    // Maps to: GET /v1/tts/jobs/{job_id}/audio.ogg (Piper) or audio.mp3 (Edge)
+    // Different engines use different audio formats:
+    // - Piper: .ogg (Opus codec)
+    // - Edge-TTS: .mp3
+    // - eSpeak: .wav (PCM)
+    // - OpenAI: .mp3 (AAC codec)
+    // - WaveNet: .mp3 (default, can also use OGG_OPUS)
     getAudioUrl(jobId) {
-        const ext = this.engine === TTSClient.ENGINES.EDGE ? 'mp3' : 'ogg';
+        let ext;
+        switch (this.engine) {
+            case TTSClient.ENGINES.EDGE:
+            case TTSClient.ENGINES.OPENAI:
+            case TTSClient.ENGINES.WAVENET:
+                ext = 'mp3';
+                break;
+            case TTSClient.ENGINES.ESPEAK:
+                ext = 'wav';
+                break;
+            case TTSClient.ENGINES.PIPER:
+            default:
+                ext = 'ogg';
+                break;
+        }
         return this.apiBase + '/v1/tts/jobs/' + jobId + '/audio.' + ext + '?engine=' + this.engine;
     }
 
     // Get individual segment audio URL
     // Note: Piper uses /segments/{id}, Edge-TTS uses /segments/{id}/audio
     getSegmentUrl(jobId, segmentId) {
-        if (this.engine === TTSClient.ENGINES.EDGE) {
+        if (this.engine === TTSClient.ENGINES.EDGE || 
+            this.engine === TTSClient.ENGINES.OPENAI ||
+            this.engine === TTSClient.ENGINES.WAVENET) {
             return this.apiBase + '/v1/tts/jobs/' + jobId + '/segments/' + segmentId + '/audio?engine=' + this.engine;
         }
         return this.apiBase + '/v1/tts/jobs/' + jobId + '/segments/' + segmentId + '?engine=' + this.engine;
@@ -503,17 +615,42 @@ class TTSClient {
         return await response.json();
     }
 
-    // Get available models (Piper) or voices (Edge-TTS)
-    // Maps to: GET /v1/models (Piper) or GET /v1/tts/voices (Edge)
+    // Get available models (Piper) or voices (all engines)
+    // Routes to appropriate endpoint based on engine type
     async getModels() {
-        const url = this.engine === TTSClient.ENGINES.EDGE
-            ? this.apiBase + '/v1/tts/voices?engine=' + this.engine
-            : this.apiBase + '/v1/models?engine=' + this.engine;
+        return await this.getVoices();
+    }
+
+    // Get available voices for the current engine
+    async getVoices() {
+        let url;
+        
+        switch (this.engine) {
+            case TTSClient.ENGINES.PIPER:
+                // Piper uses models endpoint
+                url = this.apiBase + '/v1/models?engine=' + this.engine;
+                break;
+            
+            case TTSClient.ENGINES.EDGE:
+            case TTSClient.ENGINES.WAVENET:
+            case TTSClient.ENGINES.ESPEAK:
+            case TTSClient.ENGINES.OPENAI:
+                // All other engines use voices endpoint
+                url = this.apiBase + '/v1/tts/voices?engine=' + this.engine;
+                break;
+            
+            case TTSClient.ENGINES.WEB_SPEECH:
+                // Web Speech API voices are fetched client-side via speechSynthesis.getVoices()
+                throw new Error('Web Speech API voices should be fetched using speechSynthesis.getVoices()');
+            
+            default:
+                throw new Error('Unknown TTS engine: ' + this.engine);
+        }
         
         const response = await fetch(url);
         
         if (!response.ok) {
-            throw new Error('Failed to get models/voices: ' + response.status);
+            throw new Error('Failed to get voices for ' + this.engine + ': ' + response.status);
         }
 
         return await response.json();
@@ -527,6 +664,42 @@ class TTSClient {
         
         if (!response.ok) {
             throw new Error('Failed to get Edge-TTS voices: ' + response.status);
+        }
+        
+        return await response.json();
+    }
+
+    // Get available eSpeak NG voices (convenience method)
+    async getEspeakVoices() {
+        const url = this.apiBase + '/v1/tts/voices?engine=espeak';
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error('Failed to get eSpeak voices: ' + response.status);
+        }
+        
+        return await response.json();
+    }
+
+    // Get available Google WaveNet voices (convenience method)
+    async getWavenetVoices() {
+        const url = this.apiBase + '/v1/tts/voices?engine=wavenet';
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error('Failed to get Google WaveNet voices: ' + response.status);
+        }
+        
+        return await response.json();
+    }
+
+    // Get available OpenAI TTS voices (convenience method)
+    async getOpenAIVoices() {
+        const url = this.apiBase + '/v1/tts/voices?engine=openai';
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error('Failed to get OpenAI voices: ' + response.status);
         }
         
         return await response.json();
@@ -558,6 +731,174 @@ class TTSClient {
         }
 
         return await response.json();
+    }
+
+    // Engine capability detection methods
+    
+    // Check if engine requires server-side processing
+    requiresServer() {
+        return this.engine !== TTSClient.ENGINES.WEB_SPEECH;
+    }
+    
+    // Check if engine supports offline mode
+    supportsOffline() {
+        return this.engine === TTSClient.ENGINES.ESPEAK || 
+               this.engine === TTSClient.ENGINES.WEB_SPEECH;
+    }
+    
+    // Check if engine uses job-based synthesis (async polling)
+    usesJobQueue() {
+        return this.engine === TTSClient.ENGINES.PIPER || 
+               this.engine === TTSClient.ENGINES.ESPEAK;
+    }
+    
+    // Check if engine supports SSML marks for synchronization
+    supportsSSMLMarks() {
+        return this.engine === TTSClient.ENGINES.EDGE || 
+               this.engine === TTSClient.ENGINES.OPENAI ||
+               this.engine === TTSClient.ENGINES.WAVENET;
+    }
+    
+    // Check if engine supports multiple voice styles/emotions
+    supportsVoiceStyles() {
+        return this.engine === TTSClient.ENGINES.EDGE || 
+               this.engine === TTSClient.ENGINES.OPENAI;
+    }
+    
+    // Check if engine is premium/paid
+    isPremium() {
+        return this.engine === TTSClient.ENGINES.OPENAI;
+    }
+    
+    // Get engine quality rating (1-5)
+    getQualityRating() {
+        switch (this.engine) {
+            case TTSClient.ENGINES.OPENAI:
+                return 5; // Premium neural voices
+            case TTSClient.ENGINES.EDGE:
+            case TTSClient.ENGINES.WAVENET:
+                return 4; // High quality neural voices
+            case TTSClient.ENGINES.PIPER:
+                return 3; // Good quality, customizable
+            case TTSClient.ENGINES.WEB_SPEECH:
+                return 2; // Browser-dependent quality
+            case TTSClient.ENGINES.ESPEAK:
+                return 2; // Robotic but functional
+            default:
+                return 0;
+        }
+    }
+    
+    // Get engine display name
+    getEngineName() {
+        switch (this.engine) {
+            case TTSClient.ENGINES.PIPER:
+                return 'Piper TTS';
+            case TTSClient.ENGINES.EDGE:
+                return 'Microsoft Edge TTS';
+            case TTSClient.ENGINES.WAVENET:
+                return 'Google WaveNet TTS';
+            case TTSClient.ENGINES.ESPEAK:
+                return 'eSpeak NG';
+            case TTSClient.ENGINES.OPENAI:
+                return 'OpenAI TTS';
+            case TTSClient.ENGINES.WEB_SPEECH:
+                return 'Web Speech API';
+            default:
+                return 'Unknown';
+        }
+    }
+    
+    // Get engine description
+    getEngineDescription() {
+        switch (this.engine) {
+            case TTSClient.ENGINES.PIPER:
+                return 'Local neural TTS with phoneme customization support';
+            case TTSClient.ENGINES.EDGE:
+                return 'Cloud-based neural TTS with high-quality voices';
+            case TTSClient.ENGINES.WAVENET:
+                return 'Google neural TTS - $4/1M chars, excellent quality';
+            case TTSClient.ENGINES.ESPEAK:
+                return 'Lightweight offline TTS with phoneme support';
+            case TTSClient.ENGINES.OPENAI:
+                return 'Premium neural TTS with natural-sounding voices';
+            case TTSClient.ENGINES.WEB_SPEECH:
+                return 'Browser built-in TTS (quality varies by platform)';
+            default:
+                return '';
+        }
+    }
+    
+    // Static method: Get all available engines with metadata
+    static getAllEngines() {
+        return [
+            {
+                id: TTSClient.ENGINES.PIPER,
+                name: 'Piper TTS',
+                description: 'Local neural TTS with phoneme customization',
+                quality: 3,
+                offline: false,
+                phonemes: true,
+                ssml: false,
+                premium: false,
+                recommended: true
+            },
+            {
+                id: TTSClient.ENGINES.EDGE,
+                name: 'Microsoft Edge TTS',
+                description: 'Cloud neural TTS with high quality',
+                quality: 4,
+                offline: false,
+                phonemes: false,
+                ssml: true,
+                premium: false,
+                recommended: true
+            },
+            {
+                id: TTSClient.ENGINES.WAVENET,
+                name: 'Google WaveNet TTS',
+                description: 'Google neural TTS - $4/1M chars, excellent quality',
+                quality: 4,
+                offline: false,
+                phonemes: true,  // Supports SSML phoneme tags
+                ssml: true,
+                premium: false,  // Paid but affordable
+                recommended: true
+            },
+            {
+                id: TTSClient.ENGINES.ESPEAK,
+                name: 'eSpeak NG',
+                description: 'Lightweight offline TTS',
+                quality: 2,
+                offline: true,
+                phonemes: true,
+                ssml: false,
+                premium: false,
+                recommended: false
+            },
+            {
+                id: TTSClient.ENGINES.OPENAI,
+                name: 'OpenAI TTS',
+                description: 'Premium neural TTS (requires API key)',
+                quality: 5,
+                offline: false,
+                phonemes: false,
+                ssml: true,
+                premium: true,
+                recommended: false
+            },
+            {
+                id: TTSClient.ENGINES.WEB_SPEECH,
+                name: 'Web Speech API',
+                description: 'Browser built-in TTS',
+                quality: 2,
+                offline: true,
+                phonemes: false,
+                ssml: false,
+                premium: false,
+                recommended: false
+            }
+        ];
     }
 
     cleanup() {

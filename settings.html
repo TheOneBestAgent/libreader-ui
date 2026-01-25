@@ -213,8 +213,12 @@
             <div class="control-group">
                 <label for="engineSelect">Select TTS Engine</label>
                 <select id="engineSelect">
-                    <option value="piper">Piper (Local) - Supports custom pronunciations</option>
-                    <option value="edge">Microsoft Edge TTS - High quality online voices</option>
+                    <option value="piper">Piper TTS ⭐ - Local neural TTS with phoneme support</option>
+                    <option value="edge">Microsoft Edge TTS ⭐ - High quality cloud voices</option>
+                    <option value="wavenet">Google WaveNet TTS - $4/1M chars, excellent quality</option>
+                    <option value="espeak">eSpeak NG - Lightweight offline TTS</option>
+                    <option value="openai">OpenAI TTS 💎 - Premium neural voices (requires API key)</option>
+                    <option value="web">Web Speech API - Browser built-in TTS</option>
                 </select>
                 <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);" id="engineDescription">
                     Piper runs locally and supports custom pronunciation dictionaries.
@@ -412,24 +416,60 @@
             const phonemesCheckbox = document.getElementById('preferPhonemes');
             const dictionarySection = document.querySelector('.section:has(#wordInput)');
             
+            // Engine descriptions
+            const descriptions = {
+                'piper': 'Local neural TTS with phoneme customization support. Runs on your server.',
+                'edge': 'Cloud-based neural TTS with high-quality voices from Microsoft. Free to use.',
+                'wavenet': 'Google WaveNet neural TTS. Excellent quality at $4/1M chars. Supports SSML phonemes.',
+                'espeak': 'Lightweight offline TTS engine. Robotic but functional, supports phonemes.',
+                'openai': 'Premium neural TTS from OpenAI with natural-sounding voices. Requires API key.',
+                'web': 'Browser built-in TTS. Quality varies by platform and available system voices.'
+            };
+            
+            // Update description
+            descEl.textContent = descriptions[engine] || descriptions['piper'];
+            
+            // Show/hide Edge voice section
             if (engine === 'edge') {
                 edgeSection.style.display = 'block';
-                piperWarning.style.display = 'block';
-                descEl.textContent = 'Microsoft Edge TTS offers high-quality neural voices but does not support custom pronunciations.';
-                phonemesCheckbox.disabled = true;
-                phonemesCheckbox.checked = false;
-                if (dictionarySection) dictionarySection.style.opacity = '0.5';
-                
-                // Load voices if not loaded
                 if (!edgeVoicesLoaded) {
                     loadEdgeVoices();
                 }
             } else {
                 edgeSection.style.display = 'none';
+            }
+            
+            // Show/hide phoneme warning for engines that don't support phonemes
+            // Piper, eSpeak, and WaveNet support phonemes (Piper/eSpeak custom, WaveNet via SSML)
+            const supportsPhonemes = engine === 'piper' || engine === 'espeak' || engine === 'wavenet';
+            if (!supportsPhonemes) {
+                piperWarning.style.display = 'block';
+                piperWarning.textContent = '⚠️ ' + descriptions[engine].split('.')[0] + ' does not support custom pronunciations. Dictionary features will be disabled.';
+                piperWarning.style.background = '#fff3cd';
+                piperWarning.style.color = '#856404';
+                phonemesCheckbox.disabled = true;
+                phonemesCheckbox.checked = false;
+                if (dictionarySection) dictionarySection.style.opacity = '0.5';
+            } else {
                 piperWarning.style.display = 'none';
-                descEl.textContent = 'Piper runs locally and supports custom pronunciation dictionaries.';
                 phonemesCheckbox.disabled = false;
                 if (dictionarySection) dictionarySection.style.opacity = '1';
+            }
+            
+            // Show premium badge for OpenAI
+            if (engine === 'openai') {
+                piperWarning.style.display = 'block';
+                piperWarning.style.background = '#e3f2fd';
+                piperWarning.style.color = '#1565c0';
+                piperWarning.textContent = '💎 OpenAI TTS requires an API key. Configure it in your server environment.';
+            }
+            
+            // Show API key requirement for WaveNet
+            if (engine === 'wavenet') {
+                piperWarning.style.display = 'block';
+                piperWarning.style.background = '#e3f2fd';
+                piperWarning.style.color = '#1565c0';
+                piperWarning.textContent = '🔑 Google WaveNet TTS requires GOOGLE_TTS_API_KEY environment variable on the server.';
             }
         }
         
@@ -439,6 +479,12 @@
             
             try {
                 const response = await fetch(API_BASE + '/v1/tts/voices?engine=edge');
+                
+                // Check response status before parsing
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
                 const data = await response.json();
                 
                 if (data.voices && data.voices.length > 0) {
@@ -675,24 +721,49 @@
                     return;
                 }
 
-                let html = '';
+                // Clear existing content safely
+                listEl.innerHTML = '';
+                
+                let hasEntries = false;
                 for (const [pack, entries] of Object.entries(data)) {
                     if (pack === 'local_overrides') {
                         for (const [key, value] of Object.entries(entries)) {
-                            html += `
-                                <div class="dictionary-item">
-                                    <div>
-                                        <strong>${key}</strong>
-                                        <div class="phoneme-display">${JSON.stringify(value)}</div>
-                                    </div>
-                                    <button class="danger" onclick="deleteEntry('${pack}', '${key}')">Delete</button>
-                                </div>
-                            `;
+                            hasEntries = true;
+                            
+                            // Create elements safely to prevent XSS
+                            const itemDiv = document.createElement('div');
+                            itemDiv.className = 'dictionary-item';
+                            
+                            const contentDiv = document.createElement('div');
+                            
+                            const keyStrong = document.createElement('strong');
+                            keyStrong.textContent = key; // Safe: textContent escapes HTML
+                            
+                            const phonemeDiv = document.createElement('div');
+                            phonemeDiv.className = 'phoneme-display';
+                            phonemeDiv.textContent = JSON.stringify(value); // Safe: textContent escapes HTML
+                            
+                            contentDiv.appendChild(keyStrong);
+                            contentDiv.appendChild(phonemeDiv);
+                            
+                            const deleteBtn = document.createElement('button');
+                            deleteBtn.className = 'danger';
+                            deleteBtn.textContent = 'Delete';
+                            deleteBtn.addEventListener('click', () => deleteEntry(pack, key));
+                            
+                            itemDiv.appendChild(contentDiv);
+                            itemDiv.appendChild(deleteBtn);
+                            listEl.appendChild(itemDiv);
                         }
                     }
                 }
                 
-                listEl.innerHTML = html || '<p style="color: var(--text-secondary);">No custom entries yet.</p>';
+                if (!hasEntries) {
+                    const emptyMsg = document.createElement('p');
+                    emptyMsg.style.color = 'var(--text-secondary)';
+                    emptyMsg.textContent = 'No custom entries yet.';
+                    listEl.appendChild(emptyMsg);
+                }
             } catch (error) {
                 console.error('Load dictionary error:', error);
                 document.getElementById('dictionaryList').innerHTML = 

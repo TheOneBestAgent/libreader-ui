@@ -14,6 +14,37 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// SECURITY: Sanitize HTML content from external sources to prevent XSS
+// Uses DOMPurify to remove dangerous elements and attributes
+function sanitizeHtml(html) {
+    if (!html) return '';
+    
+    // Check if DOMPurify is available
+    if (typeof DOMPurify !== 'undefined') {
+        return DOMPurify.sanitize(html, {
+            ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'em', 'strong', 'span', 'div', 
+                          'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'img',
+                          'ul', 'ol', 'li', 'blockquote', 'hr', 'pre', 'code'],
+            ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'style'],
+            FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 
+                         'button', 'select', 'textarea', 'style', 'link', 'meta'],
+            FORBID_ATTR: ['onclick', 'onerror', 'onload', 'onmouseover', 'onfocus',
+                         'onblur', 'onchange', 'onsubmit', 'onkeydown', 'onkeyup'],
+            ALLOW_DATA_ATTR: false,
+            ADD_ATTR: ['target'],  // Allow target for links
+            FORCE_BODY: true
+        });
+    }
+    
+    // Fallback: Basic sanitization if DOMPurify not loaded
+    console.warn('[Security] DOMPurify not available, using basic sanitization');
+    return html
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+        .replace(/\son\w+\s*=/gi, ' data-removed=')
+        .replace(/javascript:/gi, 'removed:');
+}
+
 // Helper function to clean chapter titles (DRY principle)
 function cleanChapterTitle(rawTitle, fallbackIndex) {
     let title = rawTitle.replace(/<\/?[^>]+(>|$)/g, '').trim();
@@ -364,6 +395,11 @@ const ttsManager = {
     progressUpdateInterval: null, // Interval for updating seekbar
     autoplayNext: false,          // Auto-play next chapter when done
     originalText: '',             // Store original chapter text
+    
+    // Word-level highlighting (from Readest TTS system)
+    wordHighlighter: null,        // WordHighlighter instance
+    textMarks: null,              // Parsed text marks for word/sentence sync
+    highlightMode: 'word',        // 'word', 'sentence', or 'paragraph'
 
     init() {
         // Initialize server TTS client
@@ -383,6 +419,7 @@ const ttsManager = {
         
         // Load all user preferences
         this.loadAutoplayFromSettings();
+        this.loadHighlightMode();
         this.loadVoicePreferences();
         this.loadPitchFromSettings();
         this.loadSavedPosition();
@@ -1021,12 +1058,20 @@ const ttsManager = {
         }
     },
     
-    async cacheAudioSegment(url, audioData) {
+    async cacheAudioSegment(url, audioData, contentType = 'audio/mpeg') {
         if (!this.audioCache) return;
         
         try {
+            // Detect content type from URL if not provided
+            if (!contentType) {
+                if (url.includes('.mp3')) contentType = 'audio/mpeg';
+                else if (url.includes('.ogg')) contentType = 'audio/ogg';
+                else if (url.includes('.wav')) contentType = 'audio/wav';
+                else contentType = 'audio/mpeg'; // Default for Edge TTS
+            }
+            
             const response = new Response(audioData, {
-                headers: { 'Content-Type': 'audio/wav' }
+                headers: { 'Content-Type': contentType }
             });
             await this.audioCache.put(url, response);
         } catch (e) {
@@ -1064,10 +1109,18 @@ const ttsManager = {
                 
                 // Check if already cached
                 const cacheKey = `tts_chapter_${currentLibraryEntry?.id}_${chapterIdx}`;
-                const cached = await this.getCachedAudio(cacheKey);
-                if (cached) {
-                    console.log('[TTS] Chapter', chapterIdx, 'already cached');
-                    continue;
+                try {
+                    const cached = localStorage.getItem(cacheKey);
+                    if (cached) {
+                        const data = JSON.parse(cached);
+                        // Check if cache is still valid (within 7 days)
+                        if (Date.now() - data.timestamp < 7 * 24 * 60 * 60 * 1000) {
+                            console.log('[TTS] Chapter', chapterIdx, 'already cached');
+                            continue;
+                        }
+                    }
+                } catch (e) {
+                    // Cache check failed, continue with prefetch
                 }
                 
                 // Fetch chapter content
@@ -1088,7 +1141,7 @@ const ttsManager = {
                 let attempts = 0;
                 while (!complete && attempts < 60) {
                     const status = await this.client.getChunkedJobStatus(result.job_ids);
-                    complete = status.overall_status === 'complete';
+                    complete = status.status === 'complete'; // Fixed: use status.status not status.overall_status
                     if (!complete) {
                         await new Promise(r => setTimeout(r, 1000));
                     }
@@ -1302,21 +1355,45 @@ const ttsManager = {
         const chapterContent = document.getElementById('chapterContent');
         if (!chapterContent) return;
         
+        // Parse text into marks using TTSUtils
+        if (window.TTSUtils && window.TTSUtils.parseTextMarks) {
+            this.textMarks = window.TTSUtils.parseTextMarks(text, {
+                includeWords: true,
+                includeSentences: true,
+                includeParagraphs: true
+            });
+            console.log('[TTS] Parsed text marks:', this.textMarks.wordCount, 'words,', 
+                        this.textMarks.sentenceCount, 'sentences,',
+                        this.textMarks.paragraphCount, 'paragraphs');
+        }
+        
         // Get all paragraphs
         const paragraphs = chapterContent.querySelectorAll('p');
         
         if (paragraphs.length > 0) {
-            // Simply index each paragraph for highlighting
-            // Progress through the audio will estimate which paragraph we're on
+            // Set up highlighting based on mode
             this.textChunks = [];
             
             paragraphs.forEach((p, pIndex) => {
-                p.classList.add('tts-sentence');
+                p.classList.add('tts-sentence', 'tts-paragraph');
                 p.setAttribute('data-tts-chunk', pIndex.toString());
+                p.setAttribute('data-paragraph-index', pIndex.toString());
                 this.textChunks.push(p.innerText || '');
+                
+                // For word-level highlighting, wrap words in spans using DOM traversal
+                // This preserves HTML markup like links, emphasis, etc.
+                if (this.highlightMode === 'word' && window.TTSUtils) {
+                    this.wrapWordsInParagraph(p, pIndex);
+                }
             });
             
-            console.log('[TTS] Set up highlighting for', paragraphs.length, 'paragraphs');
+            // Cache word elements for fast access
+            if (this.highlightMode === 'word') {
+                this.wordElements = Array.from(chapterContent.querySelectorAll('.tts-word'));
+                console.log('[TTS] Set up word-level highlighting for', this.wordElements.length, 'words across', paragraphs.length, 'paragraphs');
+            } else {
+                console.log('[TTS] Set up paragraph highlighting for', paragraphs.length, 'paragraphs');
+            }
         } else {
             // No paragraphs - treat whole content as single block
             this.textChunks = [text];
@@ -1332,11 +1409,104 @@ const ttsManager = {
         this.currentChunkIndex = -1;
     },
     
+    // Load highlight mode preference
+    loadHighlightMode() {
+        try {
+            const saved = localStorage.getItem('ttsHighlightMode');
+            if (saved && ['word', 'sentence', 'paragraph'].includes(saved)) {
+                this.highlightMode = saved;
+            }
+        } catch (e) {}
+    },
     
-    // Update text highlighting for current paragraph
+    // Set highlight mode
+    setHighlightMode(mode) {
+        if (['word', 'sentence', 'paragraph'].includes(mode)) {
+            this.highlightMode = mode;
+            try {
+                localStorage.setItem('ttsHighlightMode', mode);
+            } catch (e) {}
+        }
+    },
+    
+    // Word elements cache for word-level highlighting
+    wordElements: [],
+    
+    // Wrap words in a paragraph using DOM traversal (preserves HTML markup)
+    wrapWordsInParagraph(paragraph, paragraphIndex) {
+        const wordRegex = /[\w''-]+/g;
+        let wordIndex = 0;
+        
+        // Create a TreeWalker to traverse only text nodes
+        const walker = document.createTreeWalker(
+            paragraph,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+        
+        const nodesToProcess = [];
+        let node;
+        while (node = walker.nextNode()) {
+            // Skip empty text nodes
+            if (node.nodeValue.trim().length > 0) {
+                nodesToProcess.push(node);
+            }
+        }
+        
+        // Process each text node
+        nodesToProcess.forEach(textNode => {
+            const text = textNode.nodeValue;
+            const fragment = document.createDocumentFragment();
+            let lastIndex = 0;
+            let match;
+            
+            // Reset regex
+            wordRegex.lastIndex = 0;
+            
+            while ((match = wordRegex.exec(text)) !== null) {
+                // Add text before word
+                if (match.index > lastIndex) {
+                    fragment.appendChild(
+                        document.createTextNode(text.substring(lastIndex, match.index))
+                    );
+                }
+                
+                // Create word span
+                const span = document.createElement('span');
+                span.className = 'tts-word';
+                span.setAttribute('data-word-index', `${paragraphIndex}-${wordIndex}`);
+                span.setAttribute('data-paragraph', paragraphIndex.toString());
+                span.textContent = match[0];
+                fragment.appendChild(span);
+                
+                lastIndex = match.index + match[0].length;
+                wordIndex++;
+            }
+            
+            // Add remaining text
+            if (lastIndex < text.length) {
+                fragment.appendChild(
+                    document.createTextNode(text.substring(lastIndex))
+                );
+            }
+            
+            // Replace text node with fragment
+            textNode.parentNode.replaceChild(fragment, textNode);
+        });
+    },
+    
+    
+    // Update text highlighting for current paragraph or word
     updateHighlighting(paragraphIndex) {
         const chapterContent = document.getElementById('chapterContent');
         if (!chapterContent) return;
+        
+        // For word-level highlighting, use word index
+        if (this.highlightMode === 'word' && this.wordElements && this.wordElements.length > 0) {
+            this.updateWordHighlighting(paragraphIndex);
+            return;
+        }
         
         // Get all highlighted elements
         const allSentences = chapterContent.querySelectorAll('.tts-sentence');
@@ -1353,13 +1523,13 @@ const ttsManager = {
             const elIndex = parseInt(el.getAttribute('data-tts-chunk') || '0');
             
             // Remove old classes
-            el.classList.remove('tts-current-sentence', 'tts-read-sentence');
+            el.classList.remove('tts-current-sentence', 'tts-read-sentence', 'tts-paragraph-current', 'tts-paragraph-read');
             
             // Apply new classes
             if (elIndex < paragraphIndex) {
-                el.classList.add('tts-read-sentence');
+                el.classList.add('tts-read-sentence', 'tts-paragraph-read');
             } else if (elIndex === paragraphIndex) {
-                el.classList.add('tts-current-sentence');
+                el.classList.add('tts-current-sentence', 'tts-paragraph-current');
                 currentElement = el;
             }
         });
@@ -1372,6 +1542,92 @@ const ttsManager = {
             this.scrollToCurrentChunk(currentElement);
         }
     },
+    
+    // Update word-level highlighting based on progress
+    updateWordHighlighting(progress) {
+        if (!this.wordElements || this.wordElements.length === 0) return;
+        
+        // Calculate which word we're on based on progress
+        let wordIndex;
+        if (typeof progress === 'number' && progress >= 0 && progress <= 1) {
+            // Progress is a ratio (0-1)
+            wordIndex = Math.floor(progress * this.wordElements.length);
+        } else {
+            // Progress is a paragraph index - estimate word from paragraph
+            const paragraphIndex = progress;
+            let totalWords = 0;
+            const paragraphs = document.querySelectorAll('.tts-paragraph');
+            
+            for (let i = 0; i <= paragraphIndex && i < paragraphs.length; i++) {
+                const wordsInParagraph = paragraphs[i].querySelectorAll('.tts-word').length;
+                if (i < paragraphIndex) {
+                    totalWords += wordsInParagraph;
+                } else {
+                    // For current paragraph, add half the words
+                    totalWords += Math.floor(wordsInParagraph / 2);
+                }
+            }
+            wordIndex = totalWords;
+        }
+        
+        wordIndex = Math.min(wordIndex, this.wordElements.length - 1);
+        
+        // Skip if same word
+        if (wordIndex === this.currentWordIndex) return;
+        
+        const previousWordIndex = this.currentWordIndex;
+        this.currentWordIndex = wordIndex;
+        
+        // OPTIMIZED: Only update previous and current elements instead of all
+        let currentElement = null;
+        
+        // Remove highlight from previous word
+        if (previousWordIndex >= 0 && previousWordIndex < this.wordElements.length) {
+            this.wordElements[previousWordIndex].classList.remove('tts-word-current');
+            this.wordElements[previousWordIndex].classList.add('tts-word-read');
+        }
+        
+        // Highlight current word
+        if (wordIndex >= 0 && wordIndex < this.wordElements.length) {
+            currentElement = this.wordElements[wordIndex];
+            currentElement.classList.remove('tts-word-read');
+            currentElement.classList.add('tts-word-current');
+        }
+        
+        // Also update parent paragraph highlighting
+        const currentWord = this.wordElements[wordIndex];
+        if (currentWord) {
+            const paragraphIndex = parseInt(currentWord.getAttribute('data-paragraph') || '0');
+            
+            // Only update if paragraph changed
+            if (paragraphIndex !== this.currentParagraphIndex) {
+                const paragraphs = document.querySelectorAll('.tts-paragraph');
+                
+                // Remove from previous paragraph
+                if (this.currentParagraphIndex >= 0 && this.currentParagraphIndex < paragraphs.length) {
+                    paragraphs[this.currentParagraphIndex].classList.remove('tts-paragraph-current');
+                    paragraphs[this.currentParagraphIndex].classList.add('tts-paragraph-read');
+                }
+                
+                // Highlight current paragraph
+                if (paragraphIndex >= 0 && paragraphIndex < paragraphs.length) {
+                    paragraphs[paragraphIndex].classList.remove('tts-paragraph-read');
+                    paragraphs[paragraphIndex].classList.add('tts-paragraph-current');
+                }
+                
+                this.currentParagraphIndex = paragraphIndex;
+            }
+        }
+        
+        // Scroll current word into view
+        if (currentElement) {
+            this.scrollToCurrentChunk(currentElement);
+        }
+    },
+    
+    // Current word index for word-level highlighting
+    currentWordIndex: -1,
+    currentParagraphIndex: -1,
     
     // Scroll to the currently highlighted chunk
     scrollToCurrentChunk(element) {
@@ -1403,12 +1659,20 @@ const ttsManager = {
         const chapterContent = document.getElementById('chapterContent');
         if (!chapterContent) return;
         
+        // Clear sentence/paragraph highlighting
         const allSentences = chapterContent.querySelectorAll('.tts-sentence');
         allSentences.forEach(el => {
-            el.classList.remove('tts-current-sentence', 'tts-read-sentence');
+            el.classList.remove('tts-current-sentence', 'tts-read-sentence', 'tts-paragraph-current', 'tts-paragraph-read');
+        });
+        
+        // Clear word highlighting
+        const allWords = chapterContent.querySelectorAll('.tts-word');
+        allWords.forEach(el => {
+            el.classList.remove('tts-word-current', 'tts-word-read');
         });
         
         this.currentChunkIndex = -1;
+        this.currentWordIndex = -1;
     },
     
     // Start progress tracking interval
@@ -1467,8 +1731,12 @@ const ttsManager = {
         }
         
         // Update highlighting based on progress through text
-        // For single-segment playback, estimate which paragraph we're on based on time
-        if (this.textChunks && this.textChunks.length > 0) {
+        // Use word-level highlighting for smoother tracking
+        if (this.highlightMode === 'word' && this.wordElements && this.wordElements.length > 0) {
+            // Word-level: use progress ratio directly
+            this.updateWordHighlighting(progress / 100);
+        } else if (this.textChunks && this.textChunks.length > 0) {
+            // Paragraph-level: estimate which paragraph based on time
             const totalParagraphs = this.textChunks.length;
             const estimatedParagraph = Math.floor((progress / 100) * totalParagraphs);
             const clampedParagraph = Math.max(0, Math.min(estimatedParagraph, totalParagraphs - 1));
@@ -1536,17 +1804,58 @@ const ttsManager = {
             if (saved) {
                 const settings = JSON.parse(saved);
                 
-                // For Edge TTS, pass the selected voice
-                if (settings.engine === 'edge' && settings.edgeVoice) {
-                    options.voice = settings.edgeVoice;
-                }
+                // Get current engine (default to piper if not set)
+                const engine = settings.engine || 'piper';
                 
-                // For Piper, pass model and phoneme preferences
-                if (settings.engine === 'piper' || !settings.engine) {
-                    if (settings.model && settings.model !== 'default') {
-                        options.model = settings.model;
-                    }
-                    options.preferPhonemes = settings.preferPhonemes !== false;
+                // Engine-specific options
+                switch (engine) {
+                    case 'edge':
+                        // Microsoft Edge TTS: Use selected voice
+                        if (settings.edgeVoice) {
+                            options.voice = settings.edgeVoice;
+                        }
+                        break;
+                    
+                    case 'piper':
+                        // Piper: Model and phoneme preferences
+                        if (settings.model && settings.model !== 'default') {
+                            options.model = settings.model;
+                        }
+                        options.preferPhonemes = settings.preferPhonemes !== false;
+                        break;
+                    
+                    case 'espeak':
+                        // eSpeak NG: Voice selection and phoneme support
+                        if (settings.espeakVoice) {
+                            options.voice = settings.espeakVoice;
+                        }
+                        options.preferPhonemes = settings.preferPhonemes !== false;
+                        break;
+                    
+                    case 'openai':
+                        // OpenAI TTS: Voice model selection
+                        if (settings.openaiVoice) {
+                            options.voice = settings.openaiVoice;
+                        }
+                        // OpenAI also supports model variants (tts-1, tts-1-hd)
+                        if (settings.openaiModel) {
+                            options.model = settings.openaiModel;
+                        }
+                        break;
+                    
+                    case 'web':
+                        // Web Speech API: Browser voice
+                        if (settings.webVoice) {
+                            options.voice = settings.webVoice;
+                        }
+                        break;
+                    
+                    default:
+                        // Fallback to Piper options
+                        if (settings.model && settings.model !== 'default') {
+                            options.model = settings.model;
+                        }
+                        options.preferPhonemes = settings.preferPhonemes !== false;
                 }
             }
         } catch (error) {
@@ -1621,6 +1930,11 @@ const ttsManager = {
         this.segmentStartTime = 0;
         this.currentChunkIndex = -1;
         this.textChunks = [];
+        
+        // Reset word-level highlighting state
+        this.currentWordIndex = -1;
+        this.wordElements = [];
+        this.textMarks = null;
     },
     
     // Preprocess text to handle sound effects and special markers
@@ -1666,8 +1980,18 @@ const ttsManager = {
         // Collapse excessive ellipses
         processed = processed.replace(/\.{4,}/g, '...');
         
-        // Remove HTML tags that might have slipped through
-        processed = processed.replace(/<[^>]+>/g, ' ');
+        // Remove HTML tags safely using DOM parsing instead of regex
+        // This preserves legitimate < and > characters in text
+        if (processed.includes('<')) {
+            try {
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = processed;
+                processed = tempDiv.textContent || tempDiv.innerText || processed;
+            } catch (e) {
+                // Fallback to regex if DOM parsing fails
+                processed = processed.replace(/<[^>]+>/g, ' ');
+            }
+        }
         
         // Clean up extra whitespace (but preserve newlines for paragraph breaks)
         processed = processed.replace(/[ \t]+/g, ' ');
@@ -3376,11 +3700,12 @@ function jumpToChapter() {
 
 function displayChapter(content, chapter) {
     const contentDiv = document.getElementById('chapterContent');
-    // XSS fix: escape HTML in chapter title (content is intentionally HTML)
+    // SECURITY: Escape HTML in chapter title, sanitize chapter content
     const safeTitle = escapeHtml(chapter.title);
+    const safeContent = sanitizeHtml(content);
     contentDiv.innerHTML = `
         <h2 style="text-align: center; margin-bottom: 2rem;">Chapter ${chapter.number}: ${safeTitle}</h2>
-        ${content}
+        ${safeContent}
     `;
     
     const contentPanel = document.querySelector('.chapter-content-panel');
@@ -5050,64 +5375,79 @@ async function populateVoiceSelector() {
     try {
         // Get current engine
         const engine = ttsManager.getEngine();
-        let voices = [];
+        let rawVoices = [];
         
         if (engine === 'edge') {
             // Fetch Edge TTS voices from server
-            const response = await fetch('/api/tts/voices?engine=edge');
+            const response = await fetch('/api/tts/v1/tts/voices?engine=edge');
             if (response.ok) {
                 const data = await response.json();
-                voices = data.voices || [];
+                rawVoices = data.voices || [];
             }
         } else {
             // Get Web Speech API voices as fallback
-            voices = speechSynthesis.getVoices().map(v => ({
-                id: v.voiceURI,
-                name: v.name,
-                lang: v.lang,
-                gender: v.name.includes('Female') ? 'Female' : (v.name.includes('Male') ? 'Male' : 'Unknown')
-            }));
+            rawVoices = speechSynthesis.getVoices();
         }
         
-        if (voices.length === 0) {
+        if (rawVoices.length === 0) {
             container.innerHTML = '<div class="voice-loading">No voices available. Try changing TTS engine in settings.</div>';
             return;
         }
         
-        // Group voices by language
-        const grouped = {};
-        voices.forEach(voice => {
-            const lang = voice.lang ? voice.lang.split('-')[0] : 'unknown';
-            const langName = new Intl.DisplayNames(['en'], { type: 'language' }).of(lang) || lang;
-            if (!grouped[langName]) grouped[langName] = [];
-            grouped[langName].push(voice);
-        });
+        // Normalize voices using TTSUtils
+        const voices = rawVoices.map(v => 
+            window.TTSUtils ? window.TTSUtils.normalizeVoice(v, engine) : {
+                id: v.id || v.voiceURI || v.short_name,
+                name: v.name || v.short_name,
+                lang: v.lang || v.locale || 'en-US',
+                gender: v.gender || 'Unknown'
+            }
+        );
         
-        // Build HTML
+        // Group voices by language using TTSUtils
+        const voiceGroups = window.TTSUtils 
+            ? window.TTSUtils.groupVoicesByLanguage(voices)
+            : groupVoicesLegacy(voices);
+        
+        // Build HTML with collapsible accordion
         let html = '';
         const currentVoice = ttsManager.currentVoice;
         
-        Object.keys(grouped).sort().forEach(langName => {
-            html += `<div class="voice-group">
-                <div class="voice-group-header">${langName}</div>
-                <div class="voice-list">`;
+        // Auto-expand English group and any group containing the selected voice
+        voiceGroups.forEach((group, groupIndex) => {
+            const hasSelectedVoice = group.voices.some(v => v.id === currentVoice);
+            const isEnglish = group.id === 'en';
+            const isExpanded = isEnglish || hasSelectedVoice || groupIndex === 0;
             
-            grouped[langName].forEach(voice => {
+            html += `<div class="voice-group ${isExpanded ? 'expanded' : ''}" data-group-id="${group.id}">
+                <div class="voice-group-header" onclick="toggleVoiceGroup('${group.id}')">
+                    <div class="voice-group-title">
+                        <span>${group.name}</span>
+                        <span class="voice-group-count">(${group.count})</span>
+                    </div>
+                    <span class="voice-group-chevron">▼</span>
+                </div>
+                <div class="voice-group-content">
+                    <div class="voice-list">`;
+            
+            group.voices.forEach(voice => {
                 const isSelected = currentVoice === voice.id;
+                const genderIcon = voice.gender === 'Female' ? '♀' : voice.gender === 'Male' ? '♂' : '';
+                
                 html += `<div class="voice-item ${isSelected ? 'selected' : ''}" 
                              onclick="selectVoice('${voice.id}', '${voice.lang}')"
                              data-voice-id="${voice.id}">
                     <div class="voice-item-info">
                         <span class="voice-item-name">${voice.name}</span>
-                        <span class="voice-item-meta">${voice.gender || ''} • ${voice.lang}</span>
+                        <span class="voice-item-meta">${genderIcon} ${voice.gender || ''} • ${voice.lang}</span>
                     </div>
-                    <button class="voice-preview-btn" onclick="event.stopPropagation(); ttsManager.previewVoice('${voice.id}')">
+                    <button class="voice-preview-btn" onclick="event.stopPropagation(); ttsManager.previewVoice('${voice.id}', '${voice.engine || engine}')">>
                         Preview
                     </button>
                 </div>`;
             });
             
-            html += '</div></div>';
+            html += '</div></div></div>';
         });
         
         container.innerHTML = html;
@@ -5115,6 +5455,31 @@ async function populateVoiceSelector() {
     } catch (error) {
         console.error('[Voice Selector] Failed to load voices:', error);
         container.innerHTML = '<div class="voice-loading">Failed to load voices. Please try again.</div>';
+    }
+}
+
+// Legacy voice grouping for when TTSUtils isn't loaded
+function groupVoicesLegacy(voices) {
+    const grouped = {};
+    voices.forEach(voice => {
+        const lang = voice.lang ? voice.lang.split('-')[0] : 'unknown';
+        if (!grouped[lang]) grouped[lang] = [];
+        grouped[lang].push(voice);
+    });
+    
+    return Object.keys(grouped).sort().map(lang => ({
+        id: lang,
+        name: lang.toUpperCase(),
+        voices: grouped[lang],
+        count: grouped[lang].length
+    }));
+}
+
+// Toggle voice group accordion
+function toggleVoiceGroup(groupId) {
+    const group = document.querySelector(`.voice-group[data-group-id="${groupId}"]`);
+    if (group) {
+        group.classList.toggle('expanded');
     }
 }
 

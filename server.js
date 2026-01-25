@@ -15,8 +15,10 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const LIBREAD_URL = process.env.LIBREAD_URL || 'https://libread.com';
 // TTS API URLs - Default to localhost for local dev, Docker uses env vars
-const PIPER_TTS_API_URL = process.env.PRONOUNCEX_TTS_API || 'http://localhost:8000';
+const PIPER_TTS_API_URL = process.env.PRONOUNCEX_TTS_API || 'http://localhost:8001';
 const EDGE_TTS_API_URL = process.env.EDGE_TTS_API || 'http://localhost:8001';
+// Google Cloud TTS Configuration
+const GOOGLE_TTS_API_KEY = process.env.GOOGLE_TTS_API_KEY || '';
 // Legacy support - default TTS engine
 const TTS_API_URL = PIPER_TTS_API_URL;
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
@@ -74,14 +76,46 @@ const corsOptions = NODE_ENV === 'production'
                 callback(new Error('Not allowed by CORS'));
             }
         },
-        methods: ['GET', 'POST'],
-        allowedHeaders: ['Content-Type', 'Accept', 'X-Requested-With']
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Accept', 'X-Requested-With', 'Authorization']
     }
     : {}; // Permissive in development
 
 app.use(cors(corsOptions));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(express.json({ limit: '1mb' }));
+
+// Security headers (CSP)
+app.use((req, res, next) => {
+    // Content Security Policy - restrict resource loading
+    const cspDirectives = [
+        "default-src 'self'",
+        // Allow inline scripts/styles (required for existing code) + DOMPurify CDN
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+        "style-src 'self' 'unsafe-inline'",
+        // Images from self and allowed image proxy domains
+        "img-src 'self' data: blob: https:",
+        // Fonts
+        "font-src 'self' data:",
+        // Connect for API calls and TTS
+        "connect-src 'self' https://texttospeech.googleapis.com https://edge.microsoft.com",
+        // Media for audio playback
+        "media-src 'self' blob:",
+        // Frames - none needed
+        "frame-ancestors 'none'",
+        // Base URI restriction
+        "base-uri 'self'"
+    ];
+    
+    res.setHeader('Content-Security-Policy', cspDirectives.join('; '));
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    
+    next();
+});
+
 app.use(express.static(__dirname));
 
 // Rate limiting
@@ -136,6 +170,11 @@ function getTtsApiUrl(engine) {
         case 'edge':
         case 'edge-tts':
             return EDGE_TTS_API_URL;
+        case 'wavenet':
+        case 'google':
+        case 'google-tts':
+            // WaveNet is handled separately via Google Cloud API
+            return null;
         case 'piper':
         case 'pronouncex':
         default:
@@ -146,12 +185,28 @@ function getTtsApiUrl(engine) {
 // TTS Proxy - supports multiple engines via ?engine= query param
 app.all('/api/tts/*', async (req, res) => {
     try {
-        const ttsPath = req.path.replace('/api/tts', '');
+        // Extract path and preserve query string
+        const ttsPath = req.originalUrl.replace('/api/tts', '').split('?')[0];
         
         // Get engine from query param, body, or default to piper
         const engine = req.query.engine || (req.body && req.body.engine) || 'piper';
+        
+        // Handle Google WaveNet separately (direct API call)
+        if (engine === 'wavenet' || engine === 'google' || engine === 'google-tts') {
+            return handleGoogleTTS(req, res, ttsPath);
+        }
+        
         const baseUrl = getTtsApiUrl(engine);
-        const targetUrl = baseUrl + ttsPath;
+        
+        // Build query string, excluding 'engine' param (used for routing only)
+        const queryParams = new URLSearchParams();
+        for (const [key, value] of Object.entries(req.query)) {
+            if (key !== 'engine') {
+                queryParams.append(key, value);
+            }
+        }
+        const queryString = queryParams.toString();
+        const targetUrl = baseUrl + ttsPath + (queryString ? '?' + queryString : '');
         
         if (NODE_ENV !== 'production') {
             console.log(`[TTS Proxy] Engine: ${engine}, Target: ${targetUrl}`);
@@ -173,22 +228,171 @@ app.all('/api/tts/*', async (req, res) => {
         }
         
         const response = await fetch(targetUrl, requestOptions);
-        const contentType = response.headers.get('content-type');
         
-        if (contentType && contentType.includes('audio')) {
+        // Check if response is OK before processing
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => 'Unknown error');
+            console.error(`[TTS Proxy] Upstream error: ${response.status} - ${errorText}`);
+            return res.status(response.status).json({ 
+                error: 'TTS upstream error', 
+                status: response.status,
+                message: response.statusText 
+            });
+        }
+        
+        const contentType = response.headers.get('content-type') || '';
+        
+        if (contentType.includes('audio')) {
             const audioBuffer = await response.buffer();
             res.set('Content-Type', contentType);
             res.send(audioBuffer);
-        } else {
+        } else if (contentType.includes('application/json')) {
             const data = await response.json();
             res.set('Content-Type', 'application/json');
             res.status(response.status).send(data);
+        } else {
+            // Unexpected content type
+            console.warn(`[TTS Proxy] Unexpected content-type: ${contentType}`);
+            const text = await response.text();
+            res.set('Content-Type', 'text/plain');
+            res.status(response.status).send(text);
         }
     } catch (error) {
         console.error('[TTS Proxy] Error:', error);
         res.status(500).json({ error: 'TTS proxy error', message: error.message });
     }
 });
+
+// Handle Google WaveNet TTS API requests
+async function handleGoogleTTS(req, res, path) {
+    if (NODE_ENV !== 'production') {
+        console.log(`[Google TTS] Path: ${path}, Method: ${req.method}`);
+    }
+    
+    // Check for API key
+    if (!GOOGLE_TTS_API_KEY) {
+        return res.status(500).json({ 
+            error: 'Google TTS API key not configured',
+            message: 'Set GOOGLE_TTS_API_KEY environment variable'
+        });
+    }
+    
+    // GET /v1/tts/voices - Return list of WaveNet voices
+    if (path === '/v1/tts/voices' && req.method === 'GET') {
+        const voices = getGoogleWaveNetVoices();
+        return res.json({ voices });
+    }
+    
+    // POST /v1/tts/jobs - Create synthesis job
+    if (path === '/v1/tts/jobs' && req.method === 'POST') {
+        try {
+            const { text, voiceName, languageCode, ssmlGender, audioEncoding, speakingRate, pitch, volumeGainDb } = req.body;
+            
+            if (!text) {
+                return res.status(400).json({ error: 'Missing text parameter' });
+            }
+            
+            // Call Google TTS API
+            const googleResponse = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${GOOGLE_TTS_API_KEY}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    input: { text },
+                    voice: {
+                        languageCode: languageCode || 'en-US',
+                        name: voiceName || 'en-US-Wavenet-D',
+                        ssmlGender: ssmlGender || 'MALE'
+                    },
+                    audioConfig: {
+                        audioEncoding: audioEncoding || 'MP3',
+                        speakingRate: speakingRate || 1.0,
+                        pitch: pitch || 0.0,
+                        volumeGainDb: volumeGainDb || 0.0,
+                        sampleRateHertz: 24000
+                    }
+                })
+            });
+            
+            if (!googleResponse.ok) {
+                const errorData = await googleResponse.json();
+                console.error('[Google TTS] API Error:', errorData);
+                return res.status(500).json({ 
+                    error: 'Google TTS API error', 
+                    message: errorData.error?.message || 'Unknown error' 
+                });
+            }
+            
+            const data = await googleResponse.json();
+            
+            // Return job-like response for compatibility
+            res.json({
+                job_id: 'wavenet_' + Date.now(),
+                status: 'complete',
+                audio_content: data.audioContent,  // Base64-encoded audio
+                segments: [{
+                    segment_id: 0,
+                    audio_url: null,  // Direct audio returned
+                    text: text.substring(0, 100),
+                    start_time: 0,
+                    end_time: null
+                }]
+            });
+        } catch (error) {
+            console.error('[Google TTS] Synthesis error:', error);
+            res.status(500).json({ error: 'Synthesis failed', message: error.message });
+        }
+        return;
+    }
+    
+    // Handle other paths
+    res.status(404).json({ error: 'Endpoint not found for Google TTS' });
+}
+
+// Get list of Google WaveNet voices
+function getGoogleWaveNetVoices() {
+    return [
+        // English (US)
+        { name: 'en-US-Wavenet-A', languageCode: 'en-US', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'en-US-Wavenet-B', languageCode: 'en-US', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        { name: 'en-US-Wavenet-C', languageCode: 'en-US', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'en-US-Wavenet-D', languageCode: 'en-US', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        { name: 'en-US-Wavenet-E', languageCode: 'en-US', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'en-US-Wavenet-F', languageCode: 'en-US', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        // English (UK)
+        { name: 'en-GB-Wavenet-A', languageCode: 'en-GB', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'en-GB-Wavenet-B', languageCode: 'en-GB', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        { name: 'en-GB-Wavenet-C', languageCode: 'en-GB', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'en-GB-Wavenet-D', languageCode: 'en-GB', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        // English (Australia)
+        { name: 'en-AU-Wavenet-A', languageCode: 'en-AU', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'en-AU-Wavenet-B', languageCode: 'en-AU', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        // Spanish
+        { name: 'es-ES-Wavenet-A', languageCode: 'es-ES', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'es-ES-Wavenet-B', languageCode: 'es-ES', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        // French
+        { name: 'fr-FR-Wavenet-A', languageCode: 'fr-FR', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'fr-FR-Wavenet-B', languageCode: 'fr-FR', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        // German
+        { name: 'de-DE-Wavenet-A', languageCode: 'de-DE', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'de-DE-Wavenet-B', languageCode: 'de-DE', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        // Italian
+        { name: 'it-IT-Wavenet-A', languageCode: 'it-IT', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        // Portuguese
+        { name: 'pt-PT-Wavenet-A', languageCode: 'pt-PT', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'pt-PT-Wavenet-B', languageCode: 'pt-PT', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        // Japanese
+        { name: 'ja-JP-Wavenet-A', languageCode: 'ja-JP', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'ja-JP-Wavenet-B', languageCode: 'ja-JP', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        // Korean
+        { name: 'ko-KR-Wavenet-A', languageCode: 'ko-KR', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        // Chinese
+        { name: 'zh-CN-Wavenet-A', languageCode: 'zh-CN', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'zh-CN-Wavenet-B', languageCode: 'zh-CN', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+        // Russian
+        { name: 'ru-RU-Wavenet-A', languageCode: 'ru-RU', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
+        { name: 'ru-RU-Wavenet-B', languageCode: 'ru-RU', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
+    ];
+}
 
 // LibRead search proxy - handles FormData
 app.all('/api/search', upload.none(), async (req, res) => {
@@ -316,7 +520,41 @@ app.get('/api/chapterlist', async (req, res) => {
     }
 });
 
-// Image proxy - with URL validation
+// Image proxy - with URL validation and SSRF protection
+// Allowed domains for image proxying (prevent SSRF attacks)
+const ALLOWED_IMAGE_DOMAINS = [
+    'libread.com', 'www.libread.com',
+    'freewebnovel.com', 'www.freewebnovel.com',
+    'lightnovelworld.com', 'www.lightnovelworld.com',
+    'novelupdates.com', 'www.novelupdates.com',
+    'wuxiaworld.com', 'www.wuxiaworld.com',
+    'webnovel.com', 'www.webnovel.com',
+    'royalroad.com', 'www.royalroad.com',
+    // CDN domains commonly used by novel sites
+    'cdn.libread.com', 'img.libread.com',
+    'cdn.novelupdates.com',
+    'i.imgur.com', 'imgur.com'
+];
+
+// Check if IP is private/internal (SSRF protection)
+function isPrivateIP(hostname) {
+    // Block localhost and common private IP patterns
+    const privatePatterns = [
+        /^localhost$/i,
+        /^127\./,
+        /^10\./,
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+        /^192\.168\./,
+        /^169\.254\./,
+        /^0\./,
+        /^::1$/,
+        /^fe80:/i,
+        /^fc00:/i,
+        /^fd00:/i
+    ];
+    return privatePatterns.some(pattern => pattern.test(hostname));
+}
+
 app.get('/api/image', async (req, res) => {
     try {
         const imageUrl = sanitizeInput(req.query.url);
@@ -327,6 +565,36 @@ app.get('/api/image', async (req, res) => {
         
         if (!isValidUrl(imageUrl)) {
             return res.status(400).json({ error: 'Invalid image URL format' });
+        }
+
+        // SSRF Protection: Validate hostname
+        let urlObj;
+        try {
+            urlObj = new URL(imageUrl);
+        } catch (e) {
+            return res.status(400).json({ error: 'Invalid URL' });
+        }
+
+        const hostname = urlObj.hostname.toLowerCase();
+
+        // Block private/internal IPs
+        if (isPrivateIP(hostname)) {
+            console.warn(`[Image Proxy] Blocked private IP access attempt: ${hostname}`);
+            return res.status(403).json({ error: 'Access to internal resources is forbidden' });
+        }
+
+        // Check against allowlist
+        if (!ALLOWED_IMAGE_DOMAINS.includes(hostname)) {
+            console.warn(`[Image Proxy] Blocked non-allowlisted domain: ${hostname}`);
+            return res.status(403).json({ 
+                error: 'Domain not allowed',
+                message: 'Only images from approved novel sites are permitted'
+            });
+        }
+
+        // Only allow HTTPS in production
+        if (NODE_ENV === 'production' && urlObj.protocol !== 'https:') {
+            return res.status(400).json({ error: 'Only HTTPS URLs are allowed' });
         }
 
         const response = await fetch(imageUrl, {
