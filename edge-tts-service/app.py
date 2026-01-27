@@ -120,6 +120,49 @@ async def synthesize_text(text: str, voice: str, output_path: Path) -> bool:
         return False
 
 
+async def synthesize_text_with_timing(text: str, voice: str, output_path: Path) -> tuple[bool, List[dict]]:
+    """
+    Synthesize text using edge-tts and extract word timing data.
+    Returns (success, word_timings) where word_timings is a list of {text, offset, duration}.
+    
+    The timing data comes from edge-tts's SubMaker which extracts word boundaries
+    from the TTS stream metadata.
+    """
+    word_timings = []
+    
+    try:
+        communicate = edge_tts.Communicate(text, voice)
+        submaker = edge_tts.SubMaker()
+        
+        # Collect audio chunks and timing metadata
+        audio_chunks = []
+        
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_chunks.append(chunk["data"])
+            elif chunk["type"] == "WordBoundary":
+                # WordBoundary events contain precise timing for each word
+                word_timings.append({
+                    "text": chunk["text"],
+                    "offset": chunk["offset"] / 10000,  # Convert from 100ns units to ms
+                    "duration": chunk["duration"] / 10000,  # Convert from 100ns units to ms
+                })
+        
+        # Write audio to file
+        if audio_chunks:
+            async with aiofiles.open(output_path, "wb") as f:
+                for chunk in audio_chunks:
+                    await f.write(chunk)
+            print(f"[Edge-TTS] Synthesized with {len(word_timings)} word timing markers")
+            return True, word_timings
+        else:
+            return False, []
+            
+    except Exception as e:
+        print(f"[Edge-TTS] Synthesis with timing error: {e}")
+        return False, []
+
+
 async def process_job(job_id: str, text: str, voice: str):
     """
     Background task to process a TTS job.
@@ -141,8 +184,8 @@ async def process_job(job_id: str, text: str, voice: str):
         segment_id = generate_segment_id(job_id, 0)
         output_path = get_cache_path(job_id, segment_id)
         
-        # Synthesize
-        success = await synthesize_text(text, voice, output_path)
+        # Synthesize with word timing extraction
+        success, word_timings = await synthesize_text_with_timing(text, voice, output_path)
         
         if success and output_path.exists():
             file_size = output_path.stat().st_size
@@ -153,7 +196,8 @@ async def process_job(job_id: str, text: str, voice: str):
                 "status": "completed",
                 "audio_url": f"/v1/tts/jobs/{job_id}/segments/{segment_id}/audio",
                 "file_size": file_size,
-                "format": "audio/mpeg"
+                "format": "audio/mpeg",
+                "word_timings": word_timings  # Include word timing data for sync
             }]
         else:
             job_data["status"] = "failed"
@@ -296,9 +340,11 @@ async def process_job_with_new_redis(job_id: str, text: str, voice: str):
         segment_id = generate_segment_id(job_id, 0)
         output_path = get_cache_path(job_id, segment_id)
         
-        # Synthesize
+        # Synthesize with word timing extraction
         print(f"[Edge-TTS] Starting synthesis for job {job_id}, {len(text)} chars")
-        success = await synthesize_text(text, job_data.get("voice", DEFAULT_VOICE), output_path)
+        success, word_timings = await synthesize_text_with_timing(
+            text, job_data.get("voice", DEFAULT_VOICE), output_path
+        )
         
         if success and output_path.exists():
             file_size = output_path.stat().st_size
@@ -309,9 +355,10 @@ async def process_job_with_new_redis(job_id: str, text: str, voice: str):
                 "status": "completed",
                 "audio_url": f"/v1/tts/jobs/{job_id}/segments/{segment_id}/audio",
                 "file_size": file_size,
-                "format": "audio/mpeg"
+                "format": "audio/mpeg",
+                "word_timings": word_timings  # Include word timing data for sync
             }]
-            print(f"[Edge-TTS] Job {job_id} completed, file size: {file_size}")
+            print(f"[Edge-TTS] Job {job_id} completed, file size: {file_size}, {len(word_timings)} word timings")
         else:
             job_data["status"] = "failed"
             job_data["error"] = "Synthesis failed"

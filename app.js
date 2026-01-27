@@ -1,9 +1,8 @@
 // LibRead Ereader Application
 // Based on QuickNovel's LibReadProvider.kt implementation
 
-const PROXY_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:3001/api'
-    : '/api';
+// Always use relative /api path - works for any hostname
+const PROXY_BASE = '/api';
 const API_BASE = 'https://libread.com';
 
 // HTML escaping utility to prevent XSS
@@ -77,6 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeTheme();
     setupEventListeners();
     initializeTTSManager();
+    initTtsSidebarState();
     console.log('📚 LibRead Ereader initialized (QuickNovel method)');
 });
 
@@ -299,6 +299,49 @@ function closeKeyboardShortcutsHelp() {
     if (modal) modal.classList.remove('active');
 }
 
+// TTS Sidebar Toggle
+function toggleTtsSidebar() {
+    const novelDetailView = document.getElementById('novelDetailView');
+    const sidebar = document.getElementById('ttsSidebarPanel');
+    const toggleBtn = document.getElementById('ttsSidebarToggle');
+    
+    if (!novelDetailView || !sidebar) return;
+    
+    // Check if we're on a smaller screen where sidebar should float
+    const isSmallScreen = window.innerWidth <= 1200;
+    
+    if (isSmallScreen) {
+        // Toggle floating mode
+        sidebar.classList.toggle('floating');
+        sidebar.classList.toggle('hidden');
+    } else {
+        // Toggle between 2-column and 3-column layout
+        novelDetailView.classList.toggle('has-tts-sidebar');
+        novelDetailView.classList.toggle('tts-sidebar-hidden');
+        sidebar.classList.toggle('hidden');
+    }
+    
+    // Save preference
+    localStorage.setItem('ttsSidebarVisible', !sidebar.classList.contains('hidden'));
+}
+
+// Initialize TTS sidebar state from localStorage
+function initTtsSidebarState() {
+    const novelDetailView = document.getElementById('novelDetailView');
+    const sidebar = document.getElementById('ttsSidebarPanel');
+    
+    if (!novelDetailView || !sidebar) return;
+    
+    const savedVisible = localStorage.getItem('ttsSidebarVisible');
+    
+    // Default to visible on larger screens
+    if (savedVisible === 'false') {
+        novelDetailView.classList.remove('has-tts-sidebar');
+        novelDetailView.classList.add('tts-sidebar-hidden');
+        sidebar.classList.add('hidden');
+    }
+}
+
 // TTS State Machine Constants
 const TTSState = {
     STOPPED: 'stopped',
@@ -456,7 +499,35 @@ const ttsManager = {
         // Update UI based on state
         this.updateUIForState(newState);
         
+        // Toggle teleprompter mode based on playback state
+        this.updateTeleprompterMode(newState);
+        
         console.log('[TTS] State:', this.previousState, '->', newState);
+    },
+    
+    /**
+     * Enable/disable teleprompter mode based on TTS state
+     * When active: playbar is sticky, content wrapper becomes scrollable
+     */
+    updateTeleprompterMode(state) {
+        const ttsPlayer = document.getElementById('ttsPlayer');
+        const contentPanel = document.querySelector('.chapter-content-panel');
+        const contentWrapper = document.getElementById('chapterContentWrapper');
+        
+        const isActive = state === TTSState.PLAYING || state === TTSState.PAUSED || state === TTSState.LOADING;
+        
+        if (ttsPlayer) {
+            ttsPlayer.classList.toggle('tts-sticky', isActive);
+        }
+        
+        if (contentPanel) {
+            contentPanel.classList.toggle('tts-teleprompter-mode', isActive);
+        }
+        
+        // Reset scroll position when entering teleprompter mode
+        if (isActive && contentWrapper) {
+            contentWrapper.scrollTop = 0;
+        }
     },
     
     updateUIForState(state) {
@@ -1367,32 +1438,32 @@ const ttsManager = {
                         this.textMarks.paragraphCount, 'paragraphs');
         }
         
-        // Get all paragraphs
-        const paragraphs = chapterContent.querySelectorAll('p');
+        // Get all text blocks - including h2 (chapter title) and paragraphs
+        const textBlocks = chapterContent.querySelectorAll('h2, p');
         
-        if (paragraphs.length > 0) {
+        if (textBlocks.length > 0) {
             // Set up highlighting based on mode
             this.textChunks = [];
             
-            paragraphs.forEach((p, pIndex) => {
-                p.classList.add('tts-sentence', 'tts-paragraph');
-                p.setAttribute('data-tts-chunk', pIndex.toString());
-                p.setAttribute('data-paragraph-index', pIndex.toString());
-                this.textChunks.push(p.innerText || '');
+            textBlocks.forEach((block, blockIndex) => {
+                block.classList.add('tts-sentence', 'tts-paragraph');
+                block.setAttribute('data-tts-chunk', blockIndex.toString());
+                block.setAttribute('data-paragraph-index', blockIndex.toString());
+                this.textChunks.push(block.innerText || '');
                 
                 // For word-level highlighting, wrap words in spans using DOM traversal
                 // This preserves HTML markup like links, emphasis, etc.
                 if (this.highlightMode === 'word' && window.TTSUtils) {
-                    this.wrapWordsInParagraph(p, pIndex);
+                    this.wrapWordsInParagraph(block, blockIndex);
                 }
             });
             
             // Cache word elements for fast access
             if (this.highlightMode === 'word') {
                 this.wordElements = Array.from(chapterContent.querySelectorAll('.tts-word'));
-                console.log('[TTS] Set up word-level highlighting for', this.wordElements.length, 'words across', paragraphs.length, 'paragraphs');
+                console.log('[TTS] Set up word-level highlighting for', this.wordElements.length, 'words across', textBlocks.length, 'blocks (including title)');
             } else {
-                console.log('[TTS] Set up paragraph highlighting for', paragraphs.length, 'paragraphs');
+                console.log('[TTS] Set up paragraph highlighting for', textBlocks.length, 'blocks');
             }
         } else {
             // No paragraphs - treat whole content as single block
@@ -1630,27 +1701,56 @@ const ttsManager = {
     currentParagraphIndex: -1,
     
     // Scroll to the currently highlighted chunk
+    // In teleprompter mode: text scrolls UP toward the reading line
     scrollToCurrentChunk(element) {
-        const currentEl = element || document.querySelector('.tts-current-sentence');
+        const currentEl = element || document.querySelector('.tts-word-current, .tts-current-sentence');
         if (!currentEl) return;
         
-        // Get the element's position relative to the viewport
-        const rect = currentEl.getBoundingClientRect();
-        const viewportHeight = window.innerHeight;
+        const contentPanel = document.querySelector('.chapter-content-panel');
+        const isTeleprompterMode = contentPanel?.classList.contains('tts-teleprompter-mode');
         
-        // Scroll if element is not in the middle 40% of the viewport
-        const topThreshold = viewportHeight * 0.3;
-        const bottomThreshold = viewportHeight * 0.6;
-        
-        if (rect.top < topThreshold || rect.top > bottomThreshold) {
-            // Calculate target scroll position to put element in upper third
-            const elementTop = rect.top + window.scrollY;
-            const targetScroll = elementTop - (viewportHeight * 0.25);
+        if (isTeleprompterMode) {
+            // Teleprompter mode: scroll within the chapter content wrapper
+            const contentWrapper = document.getElementById('chapterContentWrapper');
+            if (!contentWrapper) return;
             
-            window.scrollTo({
-                top: Math.max(0, targetScroll),
-                behavior: 'smooth'
-            });
+            const wrapperRect = contentWrapper.getBoundingClientRect();
+            const elementRect = currentEl.getBoundingClientRect();
+            
+            // The reading line is at ~90px from top of wrapper (sticky position)
+            // Content has 100px padding-top, so we want element at around 100-110px
+            const readingLineOffset = 110;
+            
+            // Calculate where the element currently is relative to the wrapper
+            const elementOffsetInWrapper = elementRect.top - wrapperRect.top + contentWrapper.scrollTop;
+            
+            // Calculate target scroll position to put element at the reading line
+            const targetScroll = elementOffsetInWrapper - readingLineOffset;
+            
+            // Only scroll if element is not already near the reading line
+            const currentElementPosition = elementRect.top - wrapperRect.top;
+            if (currentElementPosition < readingLineOffset - 40 || currentElementPosition > readingLineOffset + 80) {
+                contentWrapper.scrollTo({
+                    top: Math.max(0, targetScroll),
+                    behavior: 'smooth'
+                });
+            }
+        } else {
+            // Standard mode: use window scroll, center in viewport
+            const rect = currentEl.getBoundingClientRect();
+            const viewportHeight = window.innerHeight;
+            const topThreshold = viewportHeight * 0.3;
+            const bottomThreshold = viewportHeight * 0.6;
+            
+            if (rect.top < topThreshold || rect.top > bottomThreshold) {
+                const elementTop = rect.top + window.scrollY;
+                const targetScroll = elementTop - (viewportHeight * 0.25);
+                
+                window.scrollTo({
+                    top: Math.max(0, targetScroll),
+                    behavior: 'smooth'
+                });
+            }
         }
     },
     
@@ -1668,11 +1768,13 @@ const ttsManager = {
         // Clear word highlighting
         const allWords = chapterContent.querySelectorAll('.tts-word');
         allWords.forEach(el => {
-            el.classList.remove('tts-word-current', 'tts-word-read');
+            el.classList.remove('tts-word-current', 'tts-word-read', 'tts-word-in-sentence');
         });
         
         this.currentChunkIndex = -1;
         this.currentWordIndex = -1;
+        this.wordCharRanges = null;
+        this.currentSentenceWords = null;
     },
     
     // Start progress tracking interval
@@ -1787,7 +1889,7 @@ const ttsManager = {
     
     // Get current engine
     getEngine() {
-        return this.client ? this.client.getEngine() : 'piper';
+        return this.client ? this.client.getEngine() : 'edge';
     },
     
     // Check if current engine supports phonemes
@@ -1804,8 +1906,8 @@ const ttsManager = {
             if (saved) {
                 const settings = JSON.parse(saved);
                 
-                // Get current engine (default to piper if not set)
-                const engine = settings.engine || 'piper';
+                // Get current engine (default to edge if not set)
+                const engine = settings.engine || 'edge';
                 
                 // Engine-specific options
                 switch (engine) {
@@ -1935,6 +2037,22 @@ const ttsManager = {
         this.currentWordIndex = -1;
         this.wordElements = [];
         this.textMarks = null;
+        
+        // Reset sentence-by-sentence mode state
+        this.sentenceMode = false;
+        this.sentences = [];
+        this.currentSentenceIndex = 0;
+        if (this.sentenceAbortController) {
+            this.sentenceAbortController.abort();
+            this.sentenceAbortController = null;
+        }
+        if (this.preloadedSentences) {
+            this.preloadedSentences.clear();
+        }
+        if (this.sentenceAudio) {
+            this.sentenceAudio.pause();
+            this.sentenceAudio.src = '';
+        }
     },
     
     // Preprocess text to handle sound effects and special markers
@@ -2011,14 +2129,25 @@ const ttsManager = {
             return;
         }
         
-        // Resume from pause - reschedule remaining segments
-        if (this.state === TTSState.PAUSED && this.segmentQueue.length > 0) {
-            console.log('[TTS] Resuming playback with', this.segmentQueue.length, 'segments in queue');
-            this.setState(TTSState.PLAYING);
-            this.nextScheduledTime = this.audioContext.currentTime + 0.05; // Small delay to settle
-            this.scheduleNextSegments();
-            this.updateUI();
-            return;
+        // Resume from pause - for sentence mode, resume the audio element
+        if (this.state === TTSState.PAUSED) {
+            // Sentence-by-sentence mode (Edge TTS)
+            if (this.sentenceMode && this.sentenceAudio) {
+                console.log('[TTS] Resuming sentence playback');
+                this.setState(TTSState.PLAYING);
+                this.sentenceAudio.play();
+                this.updateUI();
+                return;
+            }
+            // Streaming mode - reschedule remaining segments
+            if (this.segmentQueue.length > 0) {
+                console.log('[TTS] Resuming playback with', this.segmentQueue.length, 'segments in queue');
+                this.setState(TTSState.PLAYING);
+                this.nextScheduledTime = this.audioContext.currentTime + 0.05; // Small delay to settle
+                this.scheduleNextSegments();
+                this.updateUI();
+                return;
+            }
         }
 
         const chapterContent = document.getElementById('chapterContent');
@@ -2072,16 +2201,27 @@ const ttsManager = {
         };
 
         try {
-            this.updateStatus('Starting synthesis...');
-            console.log('[TTS] Starting synthesis for', text.length, 'characters');
-            console.log('[TTS] Timing: Request sent at', this.timingStats.startTime.toFixed(2), 'ms');
-            
             // Build synthesis options based on current engine and settings
             const synthOptions = this.getSynthesisOptions();
-            console.log('[TTS] Using engine:', this.getEngine(), 'options:', synthOptions);
+            const engine = this.getEngine();
+            console.log('[TTS] Using engine:', engine, 'options:', synthOptions);
             
             // Set loading state
             this.setState(TTSState.LOADING);
+            
+            // Sentence-by-sentence engines: Edge, eSpeak, OpenAI, Piper
+            // This ensures perfect sync between text highlighting and audio
+            const sentenceEngines = ['edge', 'espeak', 'openai', 'piper'];
+            if (sentenceEngines.includes(engine)) {
+                console.log('[TTS] Using sentence-by-sentence playback for', engine);
+                await this.playSentenceBySentence(text, synthOptions);
+                return;
+            }
+            
+            // For other engines (wavenet, web): Use streaming/chunked approach
+            this.updateStatus('Starting synthesis...');
+            console.log('[TTS] Starting synthesis for', text.length, 'characters');
+            console.log('[TTS] Timing: Request sent at', this.timingStats.startTime.toFixed(2), 'ms');
             
             // Use chunked synthesis to handle long texts and avoid 413 errors
             const result = await this.client.synthesizeChunked(text, synthOptions);
@@ -2112,6 +2252,724 @@ const ttsManager = {
                 this.fallbackToWebSpeech(text);
             }
         }
+    },
+    
+    // ==================== SENTENCE-BY-SENTENCE PLAYBACK (Readest-style) ====================
+    // This approach synthesizes and plays each sentence individually, ensuring perfect
+    // synchronization between text highlighting and audio playback
+    
+    sentenceMode: false,           // True when using sentence-by-sentence playback
+    sentences: [],                 // Array of sentences to play
+    currentSentenceIndex: 0,       // Current sentence being played
+    sentenceAudio: null,           // HTMLAudioElement for current sentence
+    sentenceAbortController: null, // AbortController for cancelling playback
+    preloadedSentences: new Map(), // Cache of preloaded audio URLs: sentenceIndex -> blobURL
+    
+    /**
+     * Parse text into sentences for sentence-by-sentence playback
+     * Uses a similar approach to Readest's parseSSMLMarks
+     */
+    parseIntoSentences(text) {
+        const sentences = [];
+        // Split on sentence-ending punctuation followed by space or end of string
+        // Handles: . ! ? followed by optional quotes, then space or end
+        const sentenceRegex = /[^.!?]*[.!?]+["'\u201d\u2019]?\s*|[^.!?]+$/g;
+        let match;
+        let index = 0;
+        
+        while ((match = sentenceRegex.exec(text)) !== null) {
+            const sentence = match[0].trim();
+            if (sentence && sentence.length > 0) {
+                sentences.push({
+                    index: index++,
+                    text: sentence,
+                    start: match.index,
+                    end: match.index + match[0].length
+                });
+            }
+        }
+        
+        // If no sentences found, treat entire text as one sentence
+        if (sentences.length === 0 && text.trim()) {
+            sentences.push({
+                index: 0,
+                text: text.trim(),
+                start: 0,
+                end: text.length
+            });
+        }
+        
+        return sentences;
+    },
+    
+    /**
+     * Play text sentence by sentence with perfect audio-text sync
+     * This is the Readest-style approach for Edge TTS
+     */
+    async playSentenceBySentence(text, options = {}) {
+        // Parse text into sentences
+        this.sentences = this.parseIntoSentences(text);
+        this.currentSentenceIndex = 0;
+        this.sentenceMode = true;
+        this.sentenceAbortController = new AbortController();
+        this.preloadedSentences.clear();
+        
+        console.log('[TTS] Parsed', this.sentences.length, 'sentences for playback');
+        
+        if (this.sentences.length === 0) {
+            this.updateStatus('No content to read');
+            this.setState(TTSState.STOPPED);
+            return;
+        }
+        
+        // Start preloading first few sentences in background
+        this.preloadNextSentences(3);
+        
+        // Start playing from first sentence
+        this.setState(TTSState.PLAYING);
+        await this.playCurrentSentence(options);
+    },
+    
+    /**
+     * Preload the next N sentences in background
+     * Caches both audio URL and word timing data for precise sync
+     */
+    async preloadNextSentences(count = 3) {
+        const startIndex = this.currentSentenceIndex + 1;
+        const endIndex = Math.min(startIndex + count, this.sentences.length);
+        
+        for (let i = startIndex; i < endIndex; i++) {
+            if (this.preloadedSentences.has(i)) continue; // Already preloaded
+            if (!this.sentenceMode) break; // Playback stopped
+            
+            const sentence = this.sentences[i];
+            if (!sentence) continue;
+            
+            try {
+                // Synthesize sentence in background - returns {audioUrl, wordTimings}
+                const result = await this.synthesizeSentence(sentence.text);
+                if (result && result.audioUrl && this.sentenceMode) {
+                    // Cache both URL and timing data
+                    this.preloadedSentences.set(i, result);
+                    console.log('[TTS] Preloaded sentence', i + 1, 
+                        result.wordTimings ? `with ${result.wordTimings.length} word timings` : '(no timing data)');
+                }
+            } catch (e) {
+                console.warn('[TTS] Failed to preload sentence', i + 1, ':', e.message);
+            }
+        }
+    },
+    
+    /**
+     * Synthesize a single sentence and return the audio URL and word timings
+     * @returns {Promise<{audioUrl: string, wordTimings: Array|null}>}
+     */
+    async synthesizeSentence(text) {
+        const options = this.getSynthesisOptions();
+        
+        // Create a TTS job for this sentence
+        const result = await this.client.synthesize(text, options);
+        const jobId = result.job_id;
+        
+        // Poll for completion (with timeout)
+        const maxAttempts = 30; // 15 seconds max
+        let attempts = 0;
+        
+        while (attempts < maxAttempts) {
+            const status = await this.client.getJobStatus(jobId);
+            const jobStatus = (status.manifest || status).status;
+            
+            if (jobStatus === 'completed' || jobStatus === 'complete') {
+                // Get the audio URL and word timings
+                const segments = (status.manifest || status).segments || [];
+                if (segments.length > 0) {
+                    const segment = segments[0];
+                    const segmentId = segment.id || segment.segment_id;
+                    const audioUrl = this.client.getSegmentUrl(jobId, segmentId);
+                    // Edge-TTS provides word_timings array with {text, offset, duration} in ms
+                    const wordTimings = segment.word_timings || null;
+                    return { audioUrl, wordTimings };
+                }
+            } else if (jobStatus === 'failed' || jobStatus === 'error') {
+                throw new Error('Synthesis failed');
+            }
+            
+            await new Promise(r => setTimeout(r, 500));
+            attempts++;
+        }
+        
+        throw new Error('Synthesis timeout');
+    },
+    
+    /**
+     * Play the current sentence and handle completion
+     */
+    async playCurrentSentence(options = {}) {
+        if (!this.sentenceMode || this.currentSentenceIndex >= this.sentences.length) {
+            this.onSentencePlaybackComplete();
+            return;
+        }
+        
+        const sentence = this.sentences[this.currentSentenceIndex];
+        const signal = this.sentenceAbortController?.signal;
+        
+        if (signal?.aborted) {
+            return;
+        }
+        
+        try {
+            // Update highlighting BEFORE playing audio - this is the key sync point!
+            this.updateSentenceHighlighting(this.currentSentenceIndex);
+            
+            const progress = Math.round((this.currentSentenceIndex / this.sentences.length) * 100);
+            this.updateStatus(`Playing ${this.currentSentenceIndex + 1}/${this.sentences.length} (${progress}%)`);
+            this.updateProgress(progress);
+            
+            // Get audio URL and word timings - check preloaded cache first
+            let audioUrl, wordTimings = null;
+            if (this.preloadedSentences.has(this.currentSentenceIndex)) {
+                const cached = this.preloadedSentences.get(this.currentSentenceIndex);
+                this.preloadedSentences.delete(this.currentSentenceIndex);
+                // Handle both old format (just URL string) and new format ({audioUrl, wordTimings})
+                if (typeof cached === 'string') {
+                    audioUrl = cached;
+                } else {
+                    audioUrl = cached.audioUrl;
+                    wordTimings = cached.wordTimings;
+                }
+            } else {
+                // Synthesize on demand
+                this.updateStatus(`Synthesizing ${this.currentSentenceIndex + 1}/${this.sentences.length}...`);
+                const result = await this.synthesizeSentence(sentence.text);
+                audioUrl = result.audioUrl;
+                wordTimings = result.wordTimings;
+            }
+            
+            if (signal?.aborted) return;
+            
+            // Preload next sentences while playing
+            this.preloadNextSentences(3);
+            
+            // Play the audio with precise word timing if available
+            await this.playSentenceAudio(audioUrl, wordTimings);
+            
+            if (signal?.aborted) return;
+            
+            // Move to next sentence
+            this.currentSentenceIndex++;
+            
+            // Continue to next sentence if still playing
+            if (this.state === TTSState.PLAYING && this.sentenceMode) {
+                await this.playCurrentSentence(options);
+            }
+            
+        } catch (error) {
+            if (signal?.aborted) return;
+            
+            console.error('[TTS] Sentence playback error:', error);
+            
+            // Skip failed sentence and try next
+            this.currentSentenceIndex++;
+            if (this.state === TTSState.PLAYING && this.sentenceMode && 
+                this.currentSentenceIndex < this.sentences.length) {
+                console.log('[TTS] Skipping failed sentence, trying next');
+                await this.playCurrentSentence(options);
+            } else {
+                this.onSentencePlaybackComplete();
+            }
+        }
+    },
+    
+    /**
+     * Play audio from URL using HTMLAudioElement
+     * @param {string} audioUrl - URL of the audio file
+     * @param {Array|null} wordTimings - Optional word timing data from Edge-TTS
+     *   Each entry: {text: string, offset: number (ms), duration: number (ms)}
+     */
+    playSentenceAudio(audioUrl, wordTimings = null) {
+        // Store word timings for use in ontimeupdate
+        // Store word timings for use in ontimeupdate
+        this.currentWordTimings = wordTimings;
+        this.currentWordTimingIndex = -1;
+        this.timingToWordMap = null; // Will be built on first update
+        
+        if (wordTimings && wordTimings.length > 0) {
+            console.log('[TTS] Playing with precise word timing data:', wordTimings.length, 'words');
+        }
+        
+        return new Promise((resolve, reject) => {
+            // Create audio element if needed
+            if (!this.sentenceAudio) {
+                this.sentenceAudio = new Audio();
+            }
+            
+            const audio = this.sentenceAudio;
+            let progressInterval = null;
+            
+            // Set up event handlers
+            const cleanup = () => {
+                audio.onended = null;
+                audio.onerror = null;
+                audio.oncanplaythrough = null;
+                audio.ontimeupdate = null;
+                this.currentWordTimings = null;
+                this.currentWordTimingIndex = -1;
+                this.timingToWordMap = null; // Clear the timing-to-word map
+                if (progressInterval) {
+                    clearInterval(progressInterval);
+                    progressInterval = null;
+                }
+            };
+            
+            audio.onended = () => {
+                // Mark all words in current sentence as read
+                if (this.currentSentenceWords) {
+                    this.currentSentenceWords.forEach(w => {
+                        w.element.classList.remove('tts-word-current');
+                        w.element.classList.add('tts-word-read');
+                    });
+                }
+                cleanup();
+                resolve();
+            };
+            
+            audio.onerror = (e) => {
+                cleanup();
+                reject(new Error('Audio playback error'));
+            };
+            
+            // Track progress for word-level highlighting
+            audio.ontimeupdate = () => {
+                if (audio.duration && audio.duration > 0) {
+                    const currentTimeMs = audio.currentTime * 1000; // Convert to ms
+                    
+                    if (this.currentWordTimings && this.currentWordTimings.length > 0) {
+                        // Use precise word timing data from Edge-TTS
+                        this.updateWordHighlightingWithTimings(currentTimeMs);
+                    } else {
+                        // Fallback to estimated progress-based highlighting
+                        const progress = audio.currentTime / audio.duration;
+                        this.updateWordProgressDuringSentence(progress);
+                    }
+                }
+            };
+            
+            // Handle abort
+            if (this.sentenceAbortController?.signal.aborted) {
+                cleanup();
+                reject(new Error('Aborted'));
+                return;
+            }
+            
+            this.sentenceAbortController?.signal.addEventListener('abort', () => {
+                audio.pause();
+                cleanup();
+                reject(new Error('Aborted'));
+            });
+            
+            // Set source and play
+            audio.src = audioUrl;
+            audio.playbackRate = this.speed;
+            audio.volume = this.isMuted ? 0 : this.volume;
+            
+            audio.play().catch(reject);
+        });
+    },
+    
+    /**
+     * Build a mapping of character positions to word elements
+     * This is called once when setting up highlighting
+     */
+    buildCharToWordMap() {
+        if (!this.wordElements || this.wordElements.length === 0) return;
+        
+        this.charToWordMap = [];
+        this.wordCharRanges = [];
+        
+        const chapterContent = document.getElementById('chapterContent');
+        if (!chapterContent) return;
+        
+        // Build the full text from all text blocks (h2 + paragraphs) to match sentence parsing
+        const textBlocks = chapterContent.querySelectorAll('h2, p, .tts-paragraph');
+        let charOffset = 0;
+        
+        textBlocks.forEach((block, blockIndex) => {
+            const blockText = block.textContent || '';
+            
+            // Find all word elements in this block
+            const wordsInBlock = Array.from(block.querySelectorAll('.tts-word'));
+            let localOffset = 0;
+            
+            wordsInBlock.forEach(wordEl => {
+                const wordText = wordEl.textContent || '';
+                // Find where this word starts in the block text
+                const wordStart = blockText.indexOf(wordText, localOffset);
+                if (wordStart >= 0) {
+                    const globalStart = charOffset + wordStart;
+                    const globalEnd = globalStart + wordText.length;
+                    
+                    this.wordCharRanges.push({
+                        element: wordEl,
+                        start: globalStart,
+                        end: globalEnd,
+                        text: wordText,
+                        blockIndex: blockIndex
+                    });
+                    
+                    localOffset = wordStart + wordText.length;
+                }
+            });
+            
+            charOffset += blockText.length + 1; // +1 for newline separator
+        });
+        
+        console.log('[TTS] Built char-to-word map for', this.wordCharRanges.length, 'words');
+    },
+    
+    /**
+     * Get word elements that fall within a character range
+     */
+    getWordsInRange(start, end) {
+        if (!this.wordCharRanges) return [];
+        
+        return this.wordCharRanges.filter(w => 
+            (w.start >= start && w.start < end) || 
+            (w.end > start && w.end <= end) ||
+            (w.start <= start && w.end >= end)
+        );
+    },
+    
+    /**
+     * Update highlighting for the current sentence
+     * This is called BEFORE audio plays, ensuring perfect sync
+     */
+    updateSentenceHighlighting(sentenceIndex) {
+        const chapterContent = document.getElementById('chapterContent');
+        if (!chapterContent) return;
+        
+        const sentence = this.sentences[sentenceIndex];
+        if (!sentence) return;
+        
+        // Build char-to-word map on first call
+        if (!this.wordCharRanges) {
+            this.buildCharToWordMap();
+        }
+        
+        // Clear all current highlighting classes
+        chapterContent.querySelectorAll('.tts-current-sentence, .tts-sentence-active, .tts-paragraph-current').forEach(el => {
+            el.classList.remove('tts-current-sentence', 'tts-sentence-active', 'tts-paragraph-current');
+        });
+        
+        // Clear current word highlights (but keep read state)
+        if (this.wordElements) {
+            this.wordElements.forEach(w => {
+                w.classList.remove('tts-word-current', 'tts-word-in-sentence');
+            });
+        }
+        
+        // Get words in current sentence
+        const sentenceWords = this.getWordsInRange(sentence.start, sentence.end);
+        this.currentSentenceWords = sentenceWords;
+        this.currentSentenceWordIndex = 0;
+        
+        // Mark all words BEFORE current sentence as read
+        if (this.wordCharRanges) {
+            this.wordCharRanges.forEach(w => {
+                if (w.end <= sentence.start) {
+                    w.element.classList.add('tts-word-read');
+                    w.element.classList.remove('tts-word-current', 'tts-word-in-sentence');
+                }
+            });
+        }
+        
+        // Highlight words in current sentence
+        let targetElement = null;
+        if (sentenceWords.length > 0) {
+            sentenceWords.forEach((w, idx) => {
+                // Mark all words in sentence with a class
+                w.element.classList.add('tts-word-in-sentence');
+                // First word is current
+                if (idx === 0) {
+                    w.element.classList.add('tts-word-current');
+                    targetElement = w.element;
+                }
+            });
+        }
+        
+        // Find the text block containing the current sentence for paragraph-level dimming
+        const textBlocks = chapterContent.querySelectorAll('h2, p, .tts-paragraph');
+        let charOffset = 0;
+        
+        for (const block of textBlocks) {
+            const blockText = block.textContent || '';
+            const blockStart = charOffset;
+            const blockEnd = charOffset + blockText.length;
+            
+            // Mark blocks that are fully read
+            if (blockEnd <= sentence.start) {
+                block.classList.add('tts-read-sentence', 'tts-paragraph-read');
+            }
+            
+            charOffset = blockEnd + 1;
+        }
+        
+        // Scroll to the current word/sentence
+        if (targetElement) {
+            this.scrollToCurrentChunk(targetElement);
+        }
+    },
+    
+    /**
+     * Build a mapping from Edge-TTS word timings to DOM word elements
+     * This handles cases where the TTS word boundaries don't match our DOM word boundaries
+     * Uses proportional positioning as the primary method for reliable sync
+     */
+    buildTimingToWordMap() {
+        if (!this.currentWordTimings || !this.currentSentenceWords) return;
+        if (this.currentWordTimings.length === 0 || this.currentSentenceWords.length === 0) return;
+        
+        this.timingToWordMap = [];
+        
+        const ttsWordCount = this.currentWordTimings.length;
+        const domWordCount = this.currentSentenceWords.length;
+        
+        // Build DOM word text array for matching
+        const domWords = this.currentSentenceWords.map(w => ({
+            text: (w.text || w.element?.textContent || '').toLowerCase().replace(/[^a-z0-9]/g, ''),
+            element: w.element
+        }));
+        
+        // Use a two-pass approach:
+        // 1. First, try exact/fuzzy text matching
+        // 2. For unmatched, use proportional positioning
+        
+        let lastMatchedDomIndex = -1;
+        
+        for (let i = 0; i < ttsWordCount; i++) {
+            const timing = this.currentWordTimings[i];
+            const ttsWord = (timing.text || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            
+            if (!ttsWord) {
+                // For empty/punctuation-only timings, use proportional position
+                const proportionalIndex = Math.round((i / ttsWordCount) * domWordCount);
+                const clampedIndex = Math.min(Math.max(0, proportionalIndex), domWordCount - 1);
+                this.timingToWordMap.push({ 
+                    wordIndex: clampedIndex, 
+                    element: this.currentSentenceWords[clampedIndex].element 
+                });
+                continue;
+            }
+            
+            // Try to find exact match starting from last matched position
+            let bestMatchIndex = -1;
+            const searchStart = Math.max(0, lastMatchedDomIndex);
+            const searchEnd = Math.min(searchStart + 5, domWordCount); // Look ahead up to 5 words
+            
+            for (let j = searchStart; j < searchEnd; j++) {
+                const domWord = domWords[j];
+                if (!domWord || !domWord.text) continue;
+                
+                // Exact match
+                if (domWord.text === ttsWord) {
+                    bestMatchIndex = j;
+                    break;
+                }
+                // Partial match (one contains the other)
+                if (domWord.text.includes(ttsWord) || ttsWord.includes(domWord.text)) {
+                    bestMatchIndex = j;
+                    break;
+                }
+            }
+            
+            if (bestMatchIndex >= 0) {
+                this.timingToWordMap.push({ 
+                    wordIndex: bestMatchIndex, 
+                    element: this.currentSentenceWords[bestMatchIndex].element 
+                });
+                lastMatchedDomIndex = bestMatchIndex + 1;
+            } else {
+                // No text match found - use proportional positioning
+                // This ensures we don't drift too far even if words don't match
+                const proportionalIndex = Math.round((i / ttsWordCount) * domWordCount);
+                const clampedIndex = Math.min(Math.max(0, proportionalIndex), domWordCount - 1);
+                this.timingToWordMap.push({ 
+                    wordIndex: clampedIndex, 
+                    element: this.currentSentenceWords[clampedIndex].element 
+                });
+                // Update lastMatchedDomIndex to prevent too much drift
+                lastMatchedDomIndex = Math.max(lastMatchedDomIndex, clampedIndex);
+            }
+        }
+        
+        console.log('[TTS] Built timing-to-word map:', 
+            ttsWordCount, 'TTS words ->',
+            domWordCount, 'DOM words');
+    },
+    
+    /**
+     * Animate word highlighting using precise timing data from Edge-TTS
+     * Called with the current audio time in milliseconds
+     * This provides much more accurate sync than the progress-based method
+     */
+    updateWordHighlightingWithTimings(currentTimeMs) {
+        if (!this.currentWordTimings || this.currentWordTimings.length === 0) return;
+        if (!this.currentSentenceWords || this.currentSentenceWords.length === 0) return;
+        
+        // Build the timing-to-word map on first call
+        if (!this.timingToWordMap) {
+            this.buildTimingToWordMap();
+        }
+        
+        // Find which TTS word we should be on based on actual audio timing
+        // Word timing entry: {text, offset (ms), duration (ms)}
+        let targetTimingIndex = -1;
+        
+        for (let i = 0; i < this.currentWordTimings.length; i++) {
+            const timing = this.currentWordTimings[i];
+            const wordStart = timing.offset;
+            const wordEnd = timing.offset + timing.duration;
+            
+            if (currentTimeMs >= wordStart && currentTimeMs < wordEnd) {
+                targetTimingIndex = i;
+                break;
+            } else if (currentTimeMs < wordStart) {
+                // We haven't reached this word yet, stay on previous
+                break;
+            }
+            // If we've passed this word, it becomes the candidate
+            targetTimingIndex = i;
+        }
+        
+        if (targetTimingIndex < 0) return;
+        
+        // Get the mapped DOM word for this timing
+        const mapping = this.timingToWordMap[targetTimingIndex];
+        if (!mapping) return;
+        
+        const targetWordIndex = mapping.wordIndex;
+        
+        if (targetWordIndex !== this.currentWordTimingIndex && targetWordIndex >= 0) {
+            // Mark previous words as read
+            for (let i = Math.max(0, this.currentWordTimingIndex); i < targetWordIndex; i++) {
+                if (this.currentSentenceWords[i]) {
+                    this.currentSentenceWords[i].element.classList.remove('tts-word-current');
+                    this.currentSentenceWords[i].element.classList.add('tts-word-read');
+                }
+            }
+            
+            // Clear current highlight from all words
+            this.currentSentenceWords.forEach(w => {
+                w.element.classList.remove('tts-word-current');
+            });
+            
+            // Highlight current word
+            if (mapping.element) {
+                mapping.element.classList.add('tts-word-current');
+                // Scroll to keep current word visible
+                this.scrollToCurrentChunk(mapping.element);
+            }
+            
+            this.currentWordTimingIndex = targetWordIndex;
+            // Also update the sentence word index for consistency
+            this.currentSentenceWordIndex = targetWordIndex;
+        }
+    },
+    
+    /**
+     * Animate word highlighting during sentence playback (fallback method)
+     * Called periodically to progress through words in the sentence
+     * Uses estimated progress when precise timing data is not available
+     */
+    updateWordProgressDuringSentence(audioProgress) {
+        if (!this.currentSentenceWords || this.currentSentenceWords.length === 0) return;
+        
+        // Calculate which word we should be on based on audio progress
+        const targetWordIndex = Math.floor(audioProgress * this.currentSentenceWords.length);
+        
+        if (targetWordIndex !== this.currentSentenceWordIndex && targetWordIndex < this.currentSentenceWords.length) {
+            // Mark previous words in sentence as read
+            for (let i = this.currentSentenceWordIndex; i < targetWordIndex; i++) {
+                if (this.currentSentenceWords[i]) {
+                    this.currentSentenceWords[i].element.classList.remove('tts-word-current');
+                    this.currentSentenceWords[i].element.classList.add('tts-word-read');
+                }
+            }
+            
+            // Highlight current word
+            this.currentSentenceWords.forEach((w, i) => {
+                w.element.classList.remove('tts-word-current');
+            });
+            
+            if (this.currentSentenceWords[targetWordIndex]) {
+                this.currentSentenceWords[targetWordIndex].element.classList.add('tts-word-current');
+                // Scroll to keep current word visible
+                this.scrollToCurrentChunk(this.currentSentenceWords[targetWordIndex].element);
+            }
+            
+            this.currentSentenceWordIndex = targetWordIndex;
+        }
+    },
+    
+    /**
+     * Mark a text range as read (dimmed)
+     */
+    markRangeAsRead(container, start, end) {
+        const paragraphs = container.querySelectorAll('p, .tts-paragraph');
+        paragraphs.forEach(p => {
+            p.classList.add('tts-read-sentence', 'tts-paragraph-read');
+        });
+    },
+    
+    /**
+     * Handle completion of sentence-by-sentence playback
+     */
+    onSentencePlaybackComplete() {
+        console.log('[TTS] Sentence playback complete');
+        this.sentenceMode = false;
+        this.sentences = [];
+        this.preloadedSentences.clear();
+        
+        // Clear word tracking state
+        this.wordCharRanges = null;
+        this.currentSentenceWords = null;
+        this.currentSentenceWordIndex = 0;
+        // Clear precise word timing state
+        this.currentWordTimings = null;
+        this.currentWordTimingIndex = -1;
+        this.timingToWordMap = null;
+        
+        if (this.sentenceAudio) {
+            this.sentenceAudio.pause();
+            this.sentenceAudio.src = '';
+        }
+        
+        // Call the existing completion handler
+        this.onPlaybackComplete();
+    },
+    
+    /**
+     * Stop sentence-by-sentence playback
+     */
+    stopSentencePlayback() {
+        if (this.sentenceAbortController) {
+            this.sentenceAbortController.abort();
+            this.sentenceAbortController = null;
+        }
+        
+        if (this.sentenceAudio) {
+            this.sentenceAudio.pause();
+            this.sentenceAudio.src = '';
+        }
+        
+        this.sentenceMode = false;
+        this.sentences = [];
+        this.currentSentenceIndex = 0;
+        this.preloadedSentences.clear();
+        
+        // Clear word tracking state
+        this.wordCharRanges = null;
+        this.currentSentenceWords = null;
+        this.currentSentenceWordIndex = 0;
     },
 
     // Stream segments as they become ready
@@ -2721,7 +3579,17 @@ const ttsManager = {
 
     pause() {
         if (this.state === TTSState.PLAYING) {
-            // Stop all scheduled sources
+            // Sentence mode (Edge TTS): pause the audio element
+            if (this.sentenceMode && this.sentenceAudio) {
+                this.sentenceAudio.pause();
+                this.setState(TTSState.PAUSED);
+                this.updateStatus('Paused');
+                this.updateUI();
+                console.log('[TTS] Paused sentence', this.currentSentenceIndex + 1);
+                return;
+            }
+            
+            // Stop all scheduled sources (streaming mode)
             for (const source of this.scheduledSources) {
                 try {
                     source.stop();
@@ -2752,6 +3620,11 @@ const ttsManager = {
     },
 
     stop() {
+        // Sentence mode (Edge TTS): stop sentence playback
+        if (this.sentenceMode) {
+            this.stopSentencePlayback();
+        }
+        
         // Stop all scheduled sources
         for (const source of this.scheduledSources) {
             try {
@@ -2818,7 +3691,12 @@ const ttsManager = {
     setSpeed(speed) {
         this.speed = parseFloat(speed);
         
-        // Update playback rate on all currently scheduled sources
+        // Sentence mode: update audio element playback rate
+        if (this.sentenceAudio) {
+            this.sentenceAudio.playbackRate = this.speed;
+        }
+        
+        // Update playback rate on all currently scheduled sources (streaming mode)
         for (const source of this.scheduledSources) {
             try {
                 source.playbackRate.value = this.speed;
@@ -2838,6 +3716,12 @@ const ttsManager = {
     setVolume(volume) {
         this.volume = Math.max(0, Math.min(1, volume));
         
+        // Sentence mode: update audio element volume
+        if (this.sentenceAudio) {
+            this.sentenceAudio.volume = this.isMuted ? 0 : this.volume;
+        }
+        
+        // Streaming mode: update gain node
         if (this.gainNode) {
             this.gainNode.gain.value = this.isMuted ? 0 : this.volume;
         }
@@ -2864,6 +3748,9 @@ const ttsManager = {
         if (this.isMuted) {
             // Unmute - restore previous volume
             this.isMuted = false;
+            if (this.sentenceAudio) {
+                this.sentenceAudio.volume = this.volume;
+            }
             if (this.gainNode) {
                 this.gainNode.gain.value = this.volume;
             }
@@ -2871,6 +3758,9 @@ const ttsManager = {
             // Mute - save current volume and set to 0
             this.isMuted = true;
             this.volumeBeforeMute = this.volume;
+            if (this.sentenceAudio) {
+                this.sentenceAudio.volume = 0;
+            }
             if (this.gainNode) {
                 this.gainNode.gain.value = 0;
             }
@@ -2896,8 +3786,26 @@ const ttsManager = {
         }
     },
 
-    // Skip forward by specified number of segments (default: 1)
+    // Skip forward by specified number of segments/sentences (default: 1)
     skipForward(count = 1) {
+        // Sentence mode: skip to next sentence
+        if (this.sentenceMode && this.sentences.length > 0) {
+            const targetIndex = Math.min(
+                this.currentSentenceIndex + count,
+                this.sentences.length - 1
+            );
+            
+            if (targetIndex === this.currentSentenceIndex) {
+                console.log('[TTS] Already at last sentence');
+                return;
+            }
+            
+            console.log('[TTS] Skipping forward from sentence', this.currentSentenceIndex + 1, 'to', targetIndex + 1);
+            this.skipToSentence(targetIndex);
+            return;
+        }
+        
+        // Streaming mode
         if (!this.isStreaming || this.segments.length === 0) {
             console.log('[TTS] Cannot skip forward - not streaming');
             return;
@@ -2917,8 +3825,23 @@ const ttsManager = {
         this.skipToSegment(targetIndex);
     },
 
-    // Skip backward by specified number of segments (default: 1)
+    // Skip backward by specified number of segments/sentences (default: 1)
     skipBackward(count = 1) {
+        // Sentence mode: skip to previous sentence
+        if (this.sentenceMode && this.sentences.length > 0) {
+            const targetIndex = Math.max(this.currentSentenceIndex - count, 0);
+            
+            if (targetIndex === this.currentSentenceIndex) {
+                console.log('[TTS] Already at first sentence');
+                return;
+            }
+            
+            console.log('[TTS] Skipping backward from sentence', this.currentSentenceIndex + 1, 'to', targetIndex + 1);
+            this.skipToSentence(targetIndex);
+            return;
+        }
+        
+        // Streaming mode
         if (!this.isStreaming || this.segments.length === 0) {
             console.log('[TTS] Cannot skip backward - not streaming');
             return;
@@ -2933,6 +3856,38 @@ const ttsManager = {
 
         console.log('[TTS] Skipping backward from segment', this.currentSegmentIndex + 1, 'to', targetIndex + 1);
         this.skipToSegment(targetIndex);
+    },
+    
+    // Skip to a specific sentence in sentence mode
+    skipToSentence(targetIndex) {
+        if (targetIndex < 0 || targetIndex >= this.sentences.length) {
+            console.log('[TTS] Invalid sentence index:', targetIndex);
+            return;
+        }
+        
+        // Stop current sentence audio
+        if (this.sentenceAudio) {
+            this.sentenceAudio.pause();
+            this.sentenceAudio.src = '';
+        }
+        
+        // Clear preloaded sentences that are before the target
+        for (const [index, url] of this.preloadedSentences.entries()) {
+            if (index < targetIndex) {
+                this.preloadedSentences.delete(index);
+            }
+        }
+        
+        // Update the current index and start playing
+        this.currentSentenceIndex = targetIndex;
+        
+        // Resume playback from new position
+        if (this.state === TTSState.PLAYING) {
+            this.playCurrentSentence(this.getSynthesisOptions());
+        } else {
+            // Just update highlighting if paused
+            this.updateSentenceHighlighting(targetIndex);
+        }
     },
 
     // Skip to a specific segment index
@@ -3061,9 +4016,16 @@ const ttsManager = {
         if (playBtn) playBtn.disabled = this.isPlaying;
         if (pauseBtn) pauseBtn.disabled = !this.isPlaying;
         if (stopBtn) stopBtn.disabled = !this.isPlaying && !this.isPaused;
-        if (cancelBtn) cancelBtn.disabled = !this.currentJobId;
+        if (cancelBtn) cancelBtn.disabled = !this.currentJobId && !this.sentenceMode;
         
-        // Skip buttons enabled when streaming, playing, and have segments
+        // Sentence mode: enable skip buttons based on sentence position
+        if (this.sentenceMode && this.sentences.length > 0) {
+            if (skipBackBtn) skipBackBtn.disabled = this.currentSentenceIndex <= 0;
+            if (skipForwardBtn) skipForwardBtn.disabled = this.currentSentenceIndex >= this.sentences.length - 1;
+            return;
+        }
+        
+        // Streaming mode: skip buttons enabled when streaming, playing, and have segments
         // Require currentSegmentIndex >= 0 (playback has actually started)
         const canSkip = this.isStreaming && this.segments.length > 0 && this.currentSegmentIndex >= 0;
         if (skipBackBtn) skipBackBtn.disabled = !canSkip || this.currentSegmentIndex <= 0;
@@ -3077,20 +4039,16 @@ function initializeTTSManager() {
 
 async function fetchFromAPI(endpoint, options = {}) {
     try {
-        const useProxy = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        // Always use proxy to avoid CSP/CORS issues - the server handles external requests
+        const targetUrl = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
         let url;
-        if (useProxy) {
-            const targetUrl = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
-            // Use proxy endpoint for chapter pages and novel pages
-            if (endpoint.includes('/chapter-') || endpoint.includes('/libread/')) {
-                url = `${PROXY_BASE}/proxy?url=${encodeURIComponent(targetUrl)}`;
-            } else {
-                url = `${PROXY_BASE}/search?q=${encodeURIComponent(targetUrl)}`;
-            }
+        // Use proxy endpoint for chapter pages and novel pages
+        if (endpoint.includes('/chapter-') || endpoint.includes('/libread/')) {
+            url = `${PROXY_BASE}/proxy?url=${encodeURIComponent(targetUrl)}`;
         } else {
-            url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
+            url = `${PROXY_BASE}/search?q=${encodeURIComponent(targetUrl)}`;
         }
-        console.log('Fetching:', url);
+        console.log('Fetching via proxy:', url);
         const response = await fetch(url, options);
         if (!response.ok) throw new Error('Network response was not ok: ' + response.status);
         const html = await response.text();
@@ -3103,31 +4061,24 @@ async function fetchFromAPI(endpoint, options = {}) {
 
 async function postToAPI(endpoint, data = {}) {
     try {
-        const useProxy = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        // Always use proxy to avoid CSP/CORS issues
         let url, requestOptions;
-        if (useProxy) {
-            if (endpoint.includes('chapterlist.php')) {
-                url = `${PROXY_BASE}/chapterlist?aid=${data.aid}`;
-                requestOptions = { method: 'GET' };
-            } else if (endpoint.includes('/search')) {
-                // Use POST to send searchkey to the proxy
-                url = `${PROXY_BASE}/search`;
-                requestOptions = { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ searchkey: data.searchkey })
-                };
-            } else {
-                url = `${PROXY_BASE}/search?q=${endpoint}`;
-                requestOptions = { method: 'GET' };
-            }
+        if (endpoint.includes('chapterlist.php')) {
+            url = `${PROXY_BASE}/chapterlist?aid=${data.aid}`;
+            requestOptions = { method: 'GET' };
+        } else if (endpoint.includes('/search')) {
+            // Use POST to send searchkey to the proxy
+            url = `${PROXY_BASE}/search`;
+            requestOptions = { 
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ searchkey: data.searchkey })
+            };
         } else {
-            const formData = new FormData();
-            Object.keys(data).forEach(key => formData.append(key, data[key]));
-            url = `${API_BASE}${endpoint}`;
-            requestOptions = { method: 'POST', body: formData };
+            url = `${PROXY_BASE}/search?q=${endpoint}`;
+            requestOptions = { method: 'GET' };
         }
-        console.log('POST to:', url);
+        console.log('POST via proxy:', url);
         const response = await fetch(url, requestOptions);
         if (!response.ok) throw new Error('Network response was not ok: ' + response.status);
         return await response.text();
@@ -3491,7 +4442,10 @@ function parseChapterContent(doc, chapter) {
             .replace(/<script[^>]*>.*?<\/script>/gis, '')
             .replace(/<style[^>]*>.*?<\/style>/gis, '')
             .replace(/<!--.*?-->/gs, '')
-            .replace(/<div[^>]*style=["'][^"']*text-align:\s*center[^"']*["'][^>]*>.*?<\/div>/gis, '');
+            .replace(/<div[^>]*style=["'][^"']*text-align:\s*center[^"']*["'][^>]*>.*?<\/div>/gis, '')
+            // Remove h4 chapter titles - they duplicate the h2 we add in displayChapter()
+            // and are ignored by TTS (which only processes h2, p)
+            .replace(/<h4[^>]*>.*?<\/h4>/gis, '');
         
         // Clean up whitespace but preserve paragraph structure
         content = content.replace(/\s{2,}/g, ' ').replace(/>\s+</g, '><');
@@ -3982,6 +4936,16 @@ document.addEventListener('click', (e) => {
     if (userMenu && !userMenu.contains(e.target)) {
         closeUserDropdown();
     }
+    
+    // Close profile modal when clicking outside (on the overlay background)
+    // Only close if clicking directly on the overlay, not when opening from dropdown
+    const profileModal = document.getElementById('profileModal');
+    if (profileModal && profileModal.classList.contains('active')) {
+        // Only close if the click was directly on the modal overlay (not on content or from dropdown)
+        if (e.target === profileModal) {
+            closeProfileModal();
+        }
+    }
 });
 
 // ==================== AUTH MODAL ====================
@@ -4074,6 +5038,252 @@ function doLogout() {
     const libraryView = document.getElementById('libraryView');
     if (libraryView.classList.contains('active')) {
         showHome();
+    }
+}
+
+// ==================== PROFILE MODAL ====================
+
+function showProfileModal() {
+    if (!authClient.isLoggedIn()) {
+        showAuthModal('login');
+        return;
+    }
+
+    const modal = document.getElementById('profileModal');
+    modal.classList.add('active');
+    
+    // Load profile data
+    loadProfileData();
+    
+    // Reset to account tab
+    switchProfileTab('account');
+}
+
+function closeProfileModal() {
+    const modal = document.getElementById('profileModal');
+    modal.classList.remove('active');
+    
+    // Clear form errors/success messages
+    clearProfileMessages();
+}
+
+function switchProfileTab(tabName) {
+    // Update tab buttons
+    document.querySelectorAll('.profile-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.tab === tabName);
+    });
+    
+    // Update tab content
+    document.getElementById('profileTabAccount').style.display = tabName === 'account' ? 'block' : 'none';
+    document.getElementById('profileTabPassword').style.display = tabName === 'password' ? 'block' : 'none';
+    document.getElementById('profileTabStats').style.display = tabName === 'stats' ? 'block' : 'none';
+    
+    // Clear messages when switching tabs
+    clearProfileMessages();
+    
+    // Load stats if switching to stats tab
+    if (tabName === 'stats') {
+        loadProfileStats();
+    }
+}
+
+async function loadProfileData() {
+    const result = await authClient.getProfile();
+    
+    if (result.success && result.user) {
+        const user = result.user;
+        
+        // Populate account form if elements exist
+        const usernameEl = document.getElementById('profileUsername');
+        const emailEl = document.getElementById('profileEmail');
+        
+        if (usernameEl) usernameEl.value = user.username || '';
+        if (emailEl) emailEl.value = user.email || '';
+        
+        // Avatar
+        const avatar = document.getElementById('profileAvatarLarge');
+        if (avatar) avatar.textContent = (user.username || 'U').charAt(0).toUpperCase();
+        
+        // Member since
+        const memberSince = document.getElementById('profileMemberSince');
+        if (memberSince && user.createdAt) {
+            const date = new Date(user.createdAt);
+            memberSince.textContent = `Member since: ${date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`;
+        }
+        
+        // Stats
+        if (result.stats) {
+            const elBooks = document.getElementById('profileStatBooks');
+            const elReading = document.getElementById('profileStatReading');
+            const elCompleted = document.getElementById('profileStatCompleted');
+            
+            if (elBooks) elBooks.textContent = result.stats.booksInLibrary || 0;
+            if (elReading) elReading.textContent = result.stats.booksReading || 0;
+            if (elCompleted) elCompleted.textContent = result.stats.booksCompleted || 0;
+        }
+        
+        // Last login
+        if (user.lastLogin) {
+            const lastLoginEl = document.getElementById('profileStatLastLogin');
+            if (lastLoginEl) {
+                const lastLogin = new Date(user.lastLogin);
+                lastLoginEl.textContent = lastLogin.toLocaleDateString();
+            }
+        }
+    }
+}
+
+// Explicitly export profile functions to window to ensure global availability
+window.showProfileModal = showProfileModal;
+window.closeProfileModal = closeProfileModal;
+window.switchProfileTab = switchProfileTab;
+window.saveProfileAccount = saveProfileAccount;
+window.saveProfilePassword = saveProfilePassword;
+window.confirmDeleteAccount = confirmDeleteAccount;
+
+// ==================== INITIALIZATION ====================
+
+async function loadProfileStats() {
+    const result = await authClient.getProfile();
+    
+    if (result.success && result.stats) {
+        document.getElementById('profileStatBooks').textContent = result.stats.booksInLibrary || 0;
+        document.getElementById('profileStatReading').textContent = result.stats.booksReading || 0;
+        document.getElementById('profileStatCompleted').textContent = result.stats.booksCompleted || 0;
+    }
+}
+
+function clearProfileMessages() {
+    ['profileAccountError', 'profileAccountSuccess', 'profilePasswordError', 'profilePasswordSuccess'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = '';
+            el.classList.remove('visible');
+        }
+    });
+}
+
+async function saveProfileAccount() {
+    const usernameInput = document.getElementById('profileUsername');
+    const emailInput = document.getElementById('profileEmail');
+    const errorEl = document.getElementById('profileAccountError');
+    const successEl = document.getElementById('profileAccountSuccess');
+    
+    clearProfileMessages();
+    
+    const username = usernameInput.value.trim();
+    const email = emailInput.value.trim();
+    
+    // Validation
+    if (!username || !email) {
+        errorEl.textContent = 'Username and email are required';
+        errorEl.classList.add('visible');
+        return;
+    }
+    
+    // Check if anything changed
+    const currentUser = authClient.getUser();
+    const changes = {};
+    
+    if (username.toLowerCase() !== currentUser.username) {
+        changes.username = username;
+    }
+    if (email.toLowerCase() !== currentUser.email) {
+        changes.email = email;
+    }
+    
+    if (Object.keys(changes).length === 0) {
+        successEl.textContent = 'No changes to save';
+        successEl.classList.add('visible');
+        return;
+    }
+    
+    const result = await authClient.updateProfile(changes);
+    
+    if (result.success) {
+        successEl.textContent = 'Profile updated successfully';
+        successEl.classList.add('visible');
+        
+        // Update UI elements - auth state change listener will handle this
+        // Manually trigger UI update with new user data
+        const user = authClient.getUser();
+        updateAccountUI(user, true);
+    } else {
+        errorEl.textContent = result.error || 'Failed to update profile';
+        errorEl.classList.add('visible');
+    }
+}
+
+async function saveProfilePassword() {
+    const currentPassword = document.getElementById('profileCurrentPassword').value;
+    const newPassword = document.getElementById('profileNewPassword').value;
+    const confirmPassword = document.getElementById('profileConfirmPassword').value;
+    const errorEl = document.getElementById('profilePasswordError');
+    const successEl = document.getElementById('profilePasswordSuccess');
+    
+    clearProfileMessages();
+    
+    // Validation
+    if (!currentPassword || !newPassword || !confirmPassword) {
+        errorEl.textContent = 'All password fields are required';
+        errorEl.classList.add('visible');
+        return;
+    }
+    
+    if (newPassword.length < 6) {
+        errorEl.textContent = 'New password must be at least 6 characters';
+        errorEl.classList.add('visible');
+        return;
+    }
+    
+    if (newPassword !== confirmPassword) {
+        errorEl.textContent = 'New passwords do not match';
+        errorEl.classList.add('visible');
+        return;
+    }
+    
+    const result = await authClient.changePassword(currentPassword, newPassword);
+    
+    if (result.success) {
+        successEl.textContent = 'Password changed successfully';
+        successEl.classList.add('visible');
+        
+        // Clear password fields
+        document.getElementById('profileCurrentPassword').value = '';
+        document.getElementById('profileNewPassword').value = '';
+        document.getElementById('profileConfirmPassword').value = '';
+    } else {
+        errorEl.textContent = result.error || 'Failed to change password';
+        errorEl.classList.add('visible');
+    }
+}
+
+async function confirmDeleteAccount() {
+    // First confirmation
+    if (!confirm('Are you sure you want to delete your account? This action cannot be undone.')) {
+        return;
+    }
+    
+    // Ask for password
+    const password = prompt('Enter your password to confirm account deletion:');
+    
+    if (!password) {
+        return;
+    }
+    
+    // Second confirmation
+    if (!confirm('This will permanently delete all your data including your library, reading progress, and bookmarks. Continue?')) {
+        return;
+    }
+    
+    const result = await authClient.deleteAccount(password);
+    
+    if (result.success) {
+        closeProfileModal();
+        showHome();
+        alert('Your account has been deleted.');
+    } else {
+        alert(result.error || 'Failed to delete account. Please check your password.');
     }
 }
 
