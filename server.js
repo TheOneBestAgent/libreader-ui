@@ -17,8 +17,9 @@ const LIBREAD_URL = process.env.LIBREAD_URL || 'https://libread.com';
 // TTS API URLs - Default to localhost for local dev, Docker uses env vars
 const PIPER_TTS_API_URL = process.env.PRONOUNCEX_TTS_API || 'http://localhost:8001';
 const EDGE_TTS_API_URL = process.env.EDGE_TTS_API || 'http://localhost:8001';
-// Google Cloud TTS Configuration
-const GOOGLE_TTS_API_KEY = process.env.GOOGLE_TTS_API_KEY || '';
+const POCKET_TTS_API_URL = process.env.POCKET_TTS_API || 'http://localhost:8002';
+const ESPEAK_TTS_API_URL = process.env.ESPEAK_TTS_API || 'http://localhost:8003';
+
 // Legacy support - default TTS engine
 const TTS_API_URL = PIPER_TTS_API_URL;
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
@@ -90,14 +91,15 @@ app.use((req, res, next) => {
     // Content Security Policy - restrict resource loading
     const cspDirectives = [
         "default-src 'self'",
-        // Allow inline scripts/styles (required for existing code) + DOMPurify CDN
-        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
-        "style-src 'self' 'unsafe-inline'",
+        // Allow inline scripts/styles + CDNs for DOMPurify
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+        // Allow inline styles + Google Fonts
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         // Images from self and allowed image proxy domains
         "img-src 'self' data: blob: https:",
-        // Fonts
-        "font-src 'self' data:",
-        // Connect for API calls and TTS
+        // Fonts from Google and self
+        "font-src 'self' data: https://fonts.gstatic.com",
+        // Connect for API calls - allow self (proxy handles external calls)
         "connect-src 'self' https://texttospeech.googleapis.com https://edge.microsoft.com",
         // Media for audio playback
         "media-src 'self' blob:",
@@ -170,11 +172,12 @@ function getTtsApiUrl(engine) {
         case 'edge':
         case 'edge-tts':
             return EDGE_TTS_API_URL;
-        case 'wavenet':
-        case 'google':
-        case 'google-tts':
-            // WaveNet is handled separately via Google Cloud API
-            return null;
+        case 'pocket':
+        case 'pocket-tts':
+            return POCKET_TTS_API_URL;
+        case 'espeak':
+        case 'espeak-ng':
+            return ESPEAK_TTS_API_URL;
         case 'piper':
         case 'pronouncex':
         default:
@@ -188,13 +191,8 @@ app.all('/api/tts/*', async (req, res) => {
         // Extract path and preserve query string
         const ttsPath = req.originalUrl.replace('/api/tts', '').split('?')[0];
         
-        // Get engine from query param, body, or default to piper
-        const engine = req.query.engine || (req.body && req.body.engine) || 'piper';
-        
-        // Handle Google WaveNet separately (direct API call)
-        if (engine === 'wavenet' || engine === 'google' || engine === 'google-tts') {
-            return handleGoogleTTS(req, res, ttsPath);
-        }
+        // Get engine from query param, body, or default to edge
+        const engine = req.query.engine || (req.body && req.body.engine) || 'edge';
         
         const baseUrl = getTtsApiUrl(engine);
         
@@ -263,136 +261,7 @@ app.all('/api/tts/*', async (req, res) => {
     }
 });
 
-// Handle Google WaveNet TTS API requests
-async function handleGoogleTTS(req, res, path) {
-    if (NODE_ENV !== 'production') {
-        console.log(`[Google TTS] Path: ${path}, Method: ${req.method}`);
-    }
-    
-    // Check for API key
-    if (!GOOGLE_TTS_API_KEY) {
-        return res.status(500).json({ 
-            error: 'Google TTS API key not configured',
-            message: 'Set GOOGLE_TTS_API_KEY environment variable'
-        });
-    }
-    
-    // GET /v1/tts/voices - Return list of WaveNet voices
-    if (path === '/v1/tts/voices' && req.method === 'GET') {
-        const voices = getGoogleWaveNetVoices();
-        return res.json({ voices });
-    }
-    
-    // POST /v1/tts/jobs - Create synthesis job
-    if (path === '/v1/tts/jobs' && req.method === 'POST') {
-        try {
-            const { text, voiceName, languageCode, ssmlGender, audioEncoding, speakingRate, pitch, volumeGainDb } = req.body;
-            
-            if (!text) {
-                return res.status(400).json({ error: 'Missing text parameter' });
-            }
-            
-            // Call Google TTS API
-            const googleResponse = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${GOOGLE_TTS_API_KEY}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    input: { text },
-                    voice: {
-                        languageCode: languageCode || 'en-US',
-                        name: voiceName || 'en-US-Wavenet-D',
-                        ssmlGender: ssmlGender || 'MALE'
-                    },
-                    audioConfig: {
-                        audioEncoding: audioEncoding || 'MP3',
-                        speakingRate: speakingRate || 1.0,
-                        pitch: pitch || 0.0,
-                        volumeGainDb: volumeGainDb || 0.0,
-                        sampleRateHertz: 24000
-                    }
-                })
-            });
-            
-            if (!googleResponse.ok) {
-                const errorData = await googleResponse.json();
-                console.error('[Google TTS] API Error:', errorData);
-                return res.status(500).json({ 
-                    error: 'Google TTS API error', 
-                    message: errorData.error?.message || 'Unknown error' 
-                });
-            }
-            
-            const data = await googleResponse.json();
-            
-            // Return job-like response for compatibility
-            res.json({
-                job_id: 'wavenet_' + Date.now(),
-                status: 'complete',
-                audio_content: data.audioContent,  // Base64-encoded audio
-                segments: [{
-                    segment_id: 0,
-                    audio_url: null,  // Direct audio returned
-                    text: text.substring(0, 100),
-                    start_time: 0,
-                    end_time: null
-                }]
-            });
-        } catch (error) {
-            console.error('[Google TTS] Synthesis error:', error);
-            res.status(500).json({ error: 'Synthesis failed', message: error.message });
-        }
-        return;
-    }
-    
-    // Handle other paths
-    res.status(404).json({ error: 'Endpoint not found for Google TTS' });
-}
 
-// Get list of Google WaveNet voices
-function getGoogleWaveNetVoices() {
-    return [
-        // English (US)
-        { name: 'en-US-Wavenet-A', languageCode: 'en-US', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'en-US-Wavenet-B', languageCode: 'en-US', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        { name: 'en-US-Wavenet-C', languageCode: 'en-US', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'en-US-Wavenet-D', languageCode: 'en-US', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        { name: 'en-US-Wavenet-E', languageCode: 'en-US', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'en-US-Wavenet-F', languageCode: 'en-US', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        // English (UK)
-        { name: 'en-GB-Wavenet-A', languageCode: 'en-GB', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'en-GB-Wavenet-B', languageCode: 'en-GB', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        { name: 'en-GB-Wavenet-C', languageCode: 'en-GB', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'en-GB-Wavenet-D', languageCode: 'en-GB', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        // English (Australia)
-        { name: 'en-AU-Wavenet-A', languageCode: 'en-AU', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'en-AU-Wavenet-B', languageCode: 'en-AU', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        // Spanish
-        { name: 'es-ES-Wavenet-A', languageCode: 'es-ES', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'es-ES-Wavenet-B', languageCode: 'es-ES', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        // French
-        { name: 'fr-FR-Wavenet-A', languageCode: 'fr-FR', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'fr-FR-Wavenet-B', languageCode: 'fr-FR', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        // German
-        { name: 'de-DE-Wavenet-A', languageCode: 'de-DE', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'de-DE-Wavenet-B', languageCode: 'de-DE', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        // Italian
-        { name: 'it-IT-Wavenet-A', languageCode: 'it-IT', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        // Portuguese
-        { name: 'pt-PT-Wavenet-A', languageCode: 'pt-PT', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'pt-PT-Wavenet-B', languageCode: 'pt-PT', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        // Japanese
-        { name: 'ja-JP-Wavenet-A', languageCode: 'ja-JP', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'ja-JP-Wavenet-B', languageCode: 'ja-JP', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        // Korean
-        { name: 'ko-KR-Wavenet-A', languageCode: 'ko-KR', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        // Chinese
-        { name: 'zh-CN-Wavenet-A', languageCode: 'zh-CN', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'zh-CN-Wavenet-B', languageCode: 'zh-CN', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-        // Russian
-        { name: 'ru-RU-Wavenet-A', languageCode: 'ru-RU', ssmlGender: 'FEMALE', natural_sample_rate_hertz: 24000 },
-        { name: 'ru-RU-Wavenet-B', languageCode: 'ru-RU', ssmlGender: 'MALE', natural_sample_rate_hertz: 24000 },
-    ];
-}
 
 // LibRead search proxy - handles FormData
 app.all('/api/search', upload.none(), async (req, res) => {
@@ -472,17 +341,34 @@ app.get('/api/proxy', async (req, res) => {
 
         const response = await fetch(targetUrl, {
             headers: { 
-                'User-Agent': 'Mozilla/5.0', 
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8' 
-            }
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0'
+            },
+            redirect: 'follow',  // Follow redirects (libread.com -> freewebnovel.com)
+            follow: 10           // Max 10 redirects
         });
+
+        if (!response.ok) {
+            console.error(`[Proxy] libread.com returned ${response.status} for: ${targetUrl}`);
+            return res.status(response.status).json({ error: 'Upstream error', status: response.status, url: targetUrl });
+        }
 
         const html = await response.text();
         res.set('Content-Type', 'text/html');
+        res.set('X-Proxy-Status', 'success');
         res.send(html);
     } catch (error) {
-        console.error('[Proxy] Error:', error);
-        res.status(500).json({ error: 'Proxy error', message: error.message });
+        console.error('[Proxy] Fetch error for:', targetUrl, '-', error.message);
+        res.status(502).json({ error: 'Upstream unavailable', message: error.message, url: targetUrl });
     }
 });
 

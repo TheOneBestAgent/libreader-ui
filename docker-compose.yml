@@ -12,6 +12,8 @@ services:
       - PORT=3001
       - PRONOUNCEX_TTS_API=http://pronouncex-api:8000
       - EDGE_TTS_API=http://edge-tts-api:8001
+      - POCKET_TTS_API=http://pocket-tts-api:8002
+      - ESPEAK_TTS_API=http://espeak-tts-api:8003
       - ALLOWED_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
     networks:
       - pronouncex-net
@@ -130,6 +132,65 @@ services:
     volumes:
       - edge-tts-cache:/data/cache
 
+  # Pocket TTS Service (Voice cloning, ONNX-based, CPU optimized)
+  pocket-tts-api:
+    build:
+      context: ./pocket-tts-api
+      dockerfile: Dockerfile
+    container_name: pocket-tts-api
+    environment:
+      - POCKET_TTS_MODEL_DIR=/app/model
+      - POCKET_TTS_OUTPUT_DIR=/tmp/pocket-tts
+      - POCKET_TTS_VOICES_DIR=/app/voices
+      - POCKET_TTS_LSD_STEPS=1
+      - POCKET_TTS_TEMPERATURE=0.7
+      - PORT=8002
+    networks:
+      - pronouncex-net
+    expose:
+      - "8002"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8002/health >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s  # Model download + loading takes time
+    restart: unless-stopped
+    volumes:
+      - pocket-tts-model:/app/model
+      - pocket-tts-voices:/app/voices
+      - pocket-tts-cache:/tmp/pocket-tts
+
+  # eSpeak-NG TTS Service (Lightweight, offline capable, phoneme support)
+  espeak-tts-api:
+    build:
+      context: ./espeak-tts-service
+      dockerfile: Dockerfile
+    container_name: espeak-tts-api
+    environment:
+      - ESPEAK_TTS_REDIS_URL=redis://redis:6379/2
+      - ESPEAK_TTS_DEFAULT_VOICE=en-us
+      - ESPEAK_TTS_CACHE_DIR=/data/cache
+      - ESPEAK_SPEED=175
+      - PRONOUNCEX_API_URL=http://pronouncex-api:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+      pronouncex-api:
+        condition: service_healthy
+    networks:
+      - pronouncex-net
+    expose:
+      - "8003"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8003/health >/dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 40
+    restart: unless-stopped
+    volumes:
+      - espeak-tts-cache:/data/cache
+
 networks:
   pronouncex-net:
     driver: bridge
@@ -138,3 +199,7 @@ volumes:
   tts-cache:
   tts-dicts:
   edge-tts-cache:
+  pocket-tts-model:
+  pocket-tts-voices:
+  pocket-tts-cache:
+  espeak-tts-cache:
