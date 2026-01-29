@@ -1,0 +1,12 @@
+# Vast.ai TTS Worker Dependencies
+torch>=2.0.0
+torchaudio>=2.0.0
+soundfile>=0.12.0
+numpy>=1.24.0
+
+# Qwen3-TTS
+qwen-tts>=0.0.5
+transformers>=4.35.0
+
+# Optional: Flash Attention for better performance
+# flash-attn>=2.3.0
