@@ -19,6 +19,9 @@ const PIPER_TTS_API_URL = process.env.PRONOUNCEX_TTS_API || 'http://localhost:80
 const EDGE_TTS_API_URL = process.env.EDGE_TTS_API || 'http://localhost:8001';
 const POCKET_TTS_API_URL = process.env.POCKET_TTS_API || 'http://localhost:8002';
 const ESPEAK_TTS_API_URL = process.env.ESPEAK_TTS_API || 'http://localhost:8003';
+// Vast.ai Serverless Bark TTS
+const VASTAI_TTS_ENDPOINT = process.env.VASTAI_TTS_ENDPOINT || 'bark-tts';
+const VASTAI_API_KEY = process.env.VASTAI_API_KEY || '';
 
 // Legacy support - default TTS engine
 const TTS_API_URL = PIPER_TTS_API_URL;
@@ -178,11 +181,64 @@ function getTtsApiUrl(engine) {
         case 'espeak':
         case 'espeak-ng':
             return ESPEAK_TTS_API_URL;
+        case 'vastai':
+        case 'bark':
+            return 'vastai'; // Special marker for Vast.ai serverless
         case 'piper':
         case 'pronouncex':
         default:
             return PIPER_TTS_API_URL;
     }
+}
+
+// Vast.ai Bark TTS job storage (in-memory, for demo - use Redis in production)
+const vastaiJobs = new Map();
+
+// Helper: Handle Vast.ai Bark TTS synthesis
+async function handleVastaiTts(text, voice) {
+    if (!VASTAI_API_KEY) {
+        throw new Error('Vast.ai API key not configured. Set VASTAI_API_KEY environment variable.');
+    }
+    
+    // Get worker URL from Vast.ai serverless
+    const routeResponse = await fetch('https://run.vast.ai/route/', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${VASTAI_API_KEY}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ endpoint: VASTAI_TTS_ENDPOINT, cost: 100 })
+    });
+    
+    const routeData = await routeResponse.json();
+    
+    if (routeData.status && !routeData.url) {
+        // Worker is spinning up
+        return { 
+            status: 'spinning_up', 
+            message: routeData.status,
+            estimated_wait: '1-2 minutes for cold start'
+        };
+    }
+    
+    if (!routeData.url) {
+        throw new Error('No Vast.ai worker available: ' + JSON.stringify(routeData));
+    }
+    
+    // Send synthesis request to worker
+    const workerUrl = routeData.url.replace(/\/$/, '');
+    const synthResponse = await fetch(`${workerUrl}/synthesize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice: voice || 'v2/en_speaker_6' })
+    });
+    
+    if (!synthResponse.ok) {
+        const errText = await synthResponse.text();
+        throw new Error(`Vast.ai synthesis failed: ${synthResponse.status} - ${errText}`);
+    }
+    
+    return await synthResponse.json();
 }
 
 // TTS Proxy - supports multiple engines via ?engine= query param
@@ -195,6 +251,11 @@ app.all('/api/tts/*', async (req, res) => {
         const engine = req.query.engine || (req.body && req.body.engine) || 'edge';
         
         const baseUrl = getTtsApiUrl(engine);
+        
+        // Special handling for Vast.ai Bark TTS
+        if (baseUrl === 'vastai') {
+            return await handleVastaiRequest(req, res, ttsPath);
+        }
         
         // Build query string, excluding 'engine' param (used for routing only)
         const queryParams = new URLSearchParams();
@@ -260,6 +321,150 @@ app.all('/api/tts/*', async (req, res) => {
         res.status(500).json({ error: 'TTS proxy error', message: error.message });
     }
 });
+
+// Handle Vast.ai TTS requests (job-based API compatible with TTSClient)
+async function handleVastaiRequest(req, res, ttsPath) {
+    const method = req.method;
+    
+    if (NODE_ENV !== 'production') {
+        console.log(`[Vast.ai TTS] ${method} ${ttsPath}`);
+    }
+    
+    try {
+        // POST /v1/tts/jobs - Create synthesis job
+        if (method === 'POST' && ttsPath === '/v1/tts/jobs') {
+            const { text, voice } = req.body;
+            
+            if (!text) {
+                return res.status(400).json({ error: 'Missing text parameter' });
+            }
+            
+            // Generate job ID
+            const jobId = `vastai_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            
+            // Start synthesis in background
+            vastaiJobs.set(jobId, { status: 'processing', created: Date.now() });
+            
+            // Async synthesis
+            handleVastaiTts(text, voice)
+                .then(result => {
+                    if (result.status === 'spinning_up') {
+                        vastaiJobs.set(jobId, { 
+                            status: 'queued', 
+                            message: result.message,
+                            created: Date.now()
+                        });
+                    } else if (result.status === 'success' && result.audio) {
+                        vastaiJobs.set(jobId, {
+                            status: 'completed',
+                            audio: result.audio,
+                            duration: result.duration,
+                            sample_rate: result.sample_rate,
+                            created: Date.now()
+                        });
+                    } else {
+                        vastaiJobs.set(jobId, { 
+                            status: 'error', 
+                            error: result.error || 'Unknown error',
+                            created: Date.now()
+                        });
+                    }
+                })
+                .catch(error => {
+                    vastaiJobs.set(jobId, { 
+                        status: 'error', 
+                        error: error.message,
+                        created: Date.now()
+                    });
+                });
+            
+            return res.json({ job_id: jobId, status: 'processing' });
+        }
+        
+        // GET /v1/tts/jobs/:jobId - Get job status
+        const jobMatch = ttsPath.match(/^\/v1\/tts\/jobs\/([^\/]+)$/);
+        if (method === 'GET' && jobMatch) {
+            const jobId = jobMatch[1];
+            const job = vastaiJobs.get(jobId);
+            
+            if (!job) {
+                return res.status(404).json({ error: 'Job not found' });
+            }
+            
+            // Return job-compatible format
+            const response = {
+                job_id: jobId,
+                status: job.status,
+                segments: job.status === 'completed' ? [{
+                    id: 0,
+                    status: 'ready',
+                    audio_url: `/v1/tts/jobs/${jobId}/audio.wav`
+                }] : []
+            };
+            
+            if (job.error) response.error = job.error;
+            if (job.message) response.message = job.message;
+            if (job.duration) response.duration = job.duration;
+            
+            return res.json(response);
+        }
+        
+        // GET /v1/tts/jobs/:jobId/audio.wav - Get audio
+        const audioMatch = ttsPath.match(/^\/v1\/tts\/jobs\/([^\/]+)\/audio\.(wav|mp3)$/);
+        if (method === 'GET' && audioMatch) {
+            const jobId = audioMatch[1];
+            const job = vastaiJobs.get(jobId);
+            
+            if (!job) {
+                return res.status(404).json({ error: 'Job not found' });
+            }
+            
+            if (job.status !== 'completed' || !job.audio) {
+                return res.status(202).json({ status: job.status, message: 'Audio not ready yet' });
+            }
+            
+            // Decode base64 audio and send
+            const audioBuffer = Buffer.from(job.audio, 'base64');
+            res.set('Content-Type', 'audio/wav');
+            res.send(audioBuffer);
+            
+            // Clean up job after audio is retrieved (optional)
+            // setTimeout(() => vastaiJobs.delete(jobId), 60000);
+            return;
+        }
+        
+        // GET /v1/tts/voices - Return available Bark voices
+        if (method === 'GET' && ttsPath === '/v1/tts/voices') {
+            return res.json({
+                voices: [
+                    { short_name: 'v2/en_speaker_6', name: 'Male Narrator', gender: 'Male', locale: 'en-US' },
+                    { short_name: 'v2/en_speaker_9', name: 'Female Narrator', gender: 'Female', locale: 'en-US' },
+                    { short_name: 'v2/en_speaker_1', name: 'Calm Male', gender: 'Male', locale: 'en-US' },
+                    { short_name: 'v2/en_speaker_2', name: 'Young Female', gender: 'Female', locale: 'en-US' },
+                    { short_name: 'v2/en_speaker_3', name: 'British Male', gender: 'Male', locale: 'en-GB' },
+                    { short_name: 'v2/en_speaker_4', name: 'British Female', gender: 'Female', locale: 'en-GB' },
+                ]
+            });
+        }
+        
+        // GET /health - Health check
+        if (method === 'GET' && (ttsPath === '/health' || ttsPath === '/v1/health')) {
+            return res.json({ 
+                status: 'ok', 
+                engine: 'vastai-bark',
+                endpoint: VASTAI_TTS_ENDPOINT,
+                configured: !!VASTAI_API_KEY
+            });
+        }
+        
+        // Unknown endpoint
+        return res.status(404).json({ error: 'Unknown Vast.ai TTS endpoint', path: ttsPath });
+        
+    } catch (error) {
+        console.error('[Vast.ai TTS] Error:', error);
+        return res.status(500).json({ error: 'Vast.ai TTS error', message: error.message });
+    }
+}
 
 
 

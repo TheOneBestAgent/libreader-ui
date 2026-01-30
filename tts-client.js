@@ -13,13 +13,14 @@ class TTSClient {
     static ENGINES = {
         PIPER: 'piper',      // PronounceX/Piper - supports custom phonemes
         EDGE: 'edge',        // Microsoft Edge TTS - high quality, no phoneme support
-        WAVENET: 'wavenet',  // Google WaveNet - neural TTS, $4/1M chars
         ESPEAK: 'espeak',    // eSpeak NG - lightweight, offline capable
         OPENAI: 'openai',    // OpenAI TTS - premium neural voices
-        WEB_SPEECH: 'web'    // Browser's built-in Web Speech API
+        WEB_SPEECH: 'web',   // Browser's built-in Web Speech API
+        POCKET: 'pocket',    // Pocket TTS - voice cloning, ONNX-based
+        VASTAI: 'vastai'     // Vast.ai Bark TTS - GPU serverless, expressive
     };
 
-    constructor(apiBase = '/api/tts', engine = TTSClient.ENGINES.PIPER) {
+    constructor(apiBase = '/api/tts', engine = TTSClient.ENGINES.EDGE) {
         this.apiBase = apiBase;
         this.engine = engine;
         this.currentJobId = null;
@@ -35,11 +36,6 @@ class TTSClient {
             case 'edge-tts':
                 this.engine = TTSClient.ENGINES.EDGE;
                 break;
-            case 'wavenet':
-            case 'google':
-            case 'google-tts':
-                this.engine = TTSClient.ENGINES.WAVENET;
-                break;
             case 'espeak':
             case 'espeak-ng':
                 this.engine = TTSClient.ENGINES.ESPEAK;
@@ -51,8 +47,18 @@ class TTSClient {
             case 'web-speech':
                 this.engine = TTSClient.ENGINES.WEB_SPEECH;
                 break;
+            case 'pocket':
+            case 'pocket-tts':
+                this.engine = TTSClient.ENGINES.POCKET;
+                break;
+            case 'vastai':
+            case 'vast':
+            case 'bark':
+            case 'vastai-bark':
+                this.engine = TTSClient.ENGINES.VASTAI;
+                break;
             default:
-                this.engine = TTSClient.ENGINES.PIPER;
+                this.engine = TTSClient.ENGINES.EDGE;
         }
         console.log('[TTS] Engine set to:', this.engine);
     }
@@ -65,31 +71,32 @@ class TTSClient {
     // Check if current engine supports phonemes
     supportsPhonemes() {
         // Piper and eSpeak support custom phonemes
-        // Google WaveNet supports SSML phoneme tags
         return this.engine === TTSClient.ENGINES.PIPER || 
-               this.engine === TTSClient.ENGINES.ESPEAK ||
-               this.engine === TTSClient.ENGINES.WAVENET;
+               this.engine === TTSClient.ENGINES.ESPEAK;
     }
 
     // Maximum chunk sizes for different engines
-    static MAX_CHUNK_SIZE_WAVENET = 5000;  // Google TTS API limit
     static MAX_CHUNK_SIZE_ESPEAK = 2000;
     static MAX_CHUNK_SIZE_OPENAI = 4096;
     static MAX_CHUNK_SIZE_WEB_SPEECH = 5000; // Limited by browser TTS constraints
+    static MAX_CHUNK_SIZE_POCKET = 1000;  // Pocket TTS - smaller chunks for slower inference
+    static MAX_CHUNK_SIZE_VASTAI = 500;   // Vast.ai Bark - best quality with short chunks
     
     // Get appropriate chunk size for an engine
     static getMaxChunkSize(engine) {
         switch (engine) {
             case TTSClient.ENGINES.EDGE:
                 return TTSClient.MAX_CHUNK_SIZE_EDGE;
-            case TTSClient.ENGINES.WAVENET:
-                return TTSClient.MAX_CHUNK_SIZE_WAVENET;
             case TTSClient.ENGINES.ESPEAK:
                 return TTSClient.MAX_CHUNK_SIZE_ESPEAK;
             case TTSClient.ENGINES.OPENAI:
                 return TTSClient.MAX_CHUNK_SIZE_OPENAI;
             case TTSClient.ENGINES.WEB_SPEECH:
                 return TTSClient.MAX_CHUNK_SIZE_WEB_SPEECH;
+            case TTSClient.ENGINES.POCKET:
+                return TTSClient.MAX_CHUNK_SIZE_POCKET;
+            case TTSClient.ENGINES.VASTAI:
+                return TTSClient.MAX_CHUNK_SIZE_VASTAI;
             case TTSClient.ENGINES.PIPER:
             default:
                 return TTSClient.MAX_CHUNK_SIZE_PIPER;
@@ -187,7 +194,6 @@ class TTSClient {
             text: text,
             engine: this.engine,  // Tell server which TTS engine to use
             // Disable phonemes - glow-tts model produces better output with direct text
-            // Note: edge-tts and wavenet ignore this parameter (don't support custom phonemes)
             prefer_phonemes: options.preferPhonemes === true ? true : false
         };
 
@@ -203,31 +209,6 @@ class TTSClient {
         // For Edge-TTS: voice parameter
         if (options.voice) {
             payload.voice = options.voice;
-        }
-        
-        // For Google WaveNet: voice and audio options
-        if (this.engine === TTSClient.ENGINES.WAVENET) {
-            if (options.languageCode) {
-                payload.languageCode = options.languageCode;
-            }
-            if (options.voiceName) {
-                payload.voiceName = options.voiceName;
-            }
-            if (options.ssmlGender) {
-                payload.ssmlGender = options.ssmlGender;
-            }
-            if (options.audioEncoding) {
-                payload.audioEncoding = options.audioEncoding;
-            }
-            if (options.speakingRate !== undefined) {
-                payload.speakingRate = options.speakingRate;
-            }
-            if (options.pitch !== undefined) {
-                payload.pitch = options.pitch;
-            }
-            if (options.volumeGainDb !== undefined) {
-                payload.volumeGainDb = options.volumeGainDb;
-            }
         }
 
         console.log('[TTS] Submitting synthesis job:', {
@@ -514,16 +495,18 @@ class TTSClient {
     // - Edge-TTS: .mp3
     // - eSpeak: .wav (PCM)
     // - OpenAI: .mp3 (AAC codec)
-    // - WaveNet: .mp3 (default, can also use OGG_OPUS)
+    // - Pocket: .wav (24kHz PCM)
+    // - Vast.ai Bark: .wav (24kHz PCM)
     getAudioUrl(jobId) {
         let ext;
         switch (this.engine) {
             case TTSClient.ENGINES.EDGE:
             case TTSClient.ENGINES.OPENAI:
-            case TTSClient.ENGINES.WAVENET:
                 ext = 'mp3';
                 break;
             case TTSClient.ENGINES.ESPEAK:
+            case TTSClient.ENGINES.POCKET:
+            case TTSClient.ENGINES.VASTAI:
                 ext = 'wav';
                 break;
             case TTSClient.ENGINES.PIPER:
@@ -538,8 +521,7 @@ class TTSClient {
     // Note: Piper uses /segments/{id}, Edge-TTS uses /segments/{id}/audio
     getSegmentUrl(jobId, segmentId) {
         if (this.engine === TTSClient.ENGINES.EDGE || 
-            this.engine === TTSClient.ENGINES.OPENAI ||
-            this.engine === TTSClient.ENGINES.WAVENET) {
+            this.engine === TTSClient.ENGINES.OPENAI) {
             return this.apiBase + '/v1/tts/jobs/' + jobId + '/segments/' + segmentId + '/audio?engine=' + this.engine;
         }
         return this.apiBase + '/v1/tts/jobs/' + jobId + '/segments/' + segmentId + '?engine=' + this.engine;
@@ -632,9 +614,10 @@ class TTSClient {
                 break;
             
             case TTSClient.ENGINES.EDGE:
-            case TTSClient.ENGINES.WAVENET:
             case TTSClient.ENGINES.ESPEAK:
             case TTSClient.ENGINES.OPENAI:
+            case TTSClient.ENGINES.POCKET:
+            case TTSClient.ENGINES.VASTAI:
                 // All other engines use voices endpoint
                 url = this.apiBase + '/v1/tts/voices?engine=' + this.engine;
                 break;
@@ -676,18 +659,6 @@ class TTSClient {
         
         if (!response.ok) {
             throw new Error('Failed to get eSpeak voices: ' + response.status);
-        }
-        
-        return await response.json();
-    }
-
-    // Get available Google WaveNet voices (convenience method)
-    async getWavenetVoices() {
-        const url = this.apiBase + '/v1/tts/voices?engine=wavenet';
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-            throw new Error('Failed to get Google WaveNet voices: ' + response.status);
         }
         
         return await response.json();
@@ -749,14 +720,15 @@ class TTSClient {
     // Check if engine uses job-based synthesis (async polling)
     usesJobQueue() {
         return this.engine === TTSClient.ENGINES.PIPER || 
-               this.engine === TTSClient.ENGINES.ESPEAK;
+               this.engine === TTSClient.ENGINES.ESPEAK ||
+               this.engine === TTSClient.ENGINES.POCKET ||
+               this.engine === TTSClient.ENGINES.VASTAI;
     }
     
     // Check if engine supports SSML marks for synchronization
     supportsSSMLMarks() {
         return this.engine === TTSClient.ENGINES.EDGE || 
-               this.engine === TTSClient.ENGINES.OPENAI ||
-               this.engine === TTSClient.ENGINES.WAVENET;
+               this.engine === TTSClient.ENGINES.OPENAI;
     }
     
     // Check if engine supports multiple voice styles/emotions
@@ -767,16 +739,18 @@ class TTSClient {
     
     // Check if engine is premium/paid
     isPremium() {
-        return this.engine === TTSClient.ENGINES.OPENAI;
+        return this.engine === TTSClient.ENGINES.OPENAI ||
+               this.engine === TTSClient.ENGINES.VASTAI;
     }
     
     // Get engine quality rating (1-5)
     getQualityRating() {
         switch (this.engine) {
             case TTSClient.ENGINES.OPENAI:
+            case TTSClient.ENGINES.VASTAI:
                 return 5; // Premium neural voices
             case TTSClient.ENGINES.EDGE:
-            case TTSClient.ENGINES.WAVENET:
+            case TTSClient.ENGINES.POCKET:
                 return 4; // High quality neural voices
             case TTSClient.ENGINES.PIPER:
                 return 3; // Good quality, customizable
@@ -796,14 +770,16 @@ class TTSClient {
                 return 'Piper TTS';
             case TTSClient.ENGINES.EDGE:
                 return 'Microsoft Edge TTS';
-            case TTSClient.ENGINES.WAVENET:
-                return 'Google WaveNet TTS';
             case TTSClient.ENGINES.ESPEAK:
                 return 'eSpeak NG';
             case TTSClient.ENGINES.OPENAI:
                 return 'OpenAI TTS';
             case TTSClient.ENGINES.WEB_SPEECH:
                 return 'Web Speech API';
+            case TTSClient.ENGINES.POCKET:
+                return 'Pocket TTS';
+            case TTSClient.ENGINES.VASTAI:
+                return 'Vast.ai Bark TTS';
             default:
                 return 'Unknown';
         }
@@ -816,14 +792,16 @@ class TTSClient {
                 return 'Local neural TTS with phoneme customization support';
             case TTSClient.ENGINES.EDGE:
                 return 'Cloud-based neural TTS with high-quality voices';
-            case TTSClient.ENGINES.WAVENET:
-                return 'Google neural TTS - $4/1M chars, excellent quality';
             case TTSClient.ENGINES.ESPEAK:
                 return 'Lightweight offline TTS with phoneme support';
             case TTSClient.ENGINES.OPENAI:
                 return 'Premium neural TTS with natural-sounding voices';
             case TTSClient.ENGINES.WEB_SPEECH:
                 return 'Browser built-in TTS (quality varies by platform)';
+            case TTSClient.ENGINES.POCKET:
+                return 'Local neural TTS with zero-shot voice cloning';
+            case TTSClient.ENGINES.VASTAI:
+                return 'GPU serverless expressive TTS (~$0.04/hr when active)';
             default:
                 return '';
         }
@@ -852,17 +830,6 @@ class TTSClient {
                 phonemes: false,
                 ssml: true,
                 premium: false,
-                recommended: true
-            },
-            {
-                id: TTSClient.ENGINES.WAVENET,
-                name: 'Google WaveNet TTS',
-                description: 'Google neural TTS - $4/1M chars, excellent quality',
-                quality: 4,
-                offline: false,
-                phonemes: true,  // Supports SSML phoneme tags
-                ssml: true,
-                premium: false,  // Paid but affordable
                 recommended: true
             },
             {
@@ -896,6 +863,31 @@ class TTSClient {
                 phonemes: false,
                 ssml: false,
                 premium: false,
+                recommended: false
+            },
+            {
+                id: TTSClient.ENGINES.POCKET,
+                name: 'Pocket TTS',
+                description: 'Local neural TTS with zero-shot voice cloning',
+                quality: 4,
+                offline: false,
+                phonemes: false,
+                ssml: false,
+                premium: false,
+                voiceCloning: true,
+                recommended: false
+            },
+            {
+                id: TTSClient.ENGINES.VASTAI,
+                name: 'Vast.ai Bark TTS',
+                description: 'GPU serverless expressive TTS (~$0.04/hr)',
+                quality: 5,
+                offline: false,
+                phonemes: false,
+                ssml: false,
+                premium: true,
+                expressive: true,
+                serverless: true,
                 recommended: false
             }
         ];

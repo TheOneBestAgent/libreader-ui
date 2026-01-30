@@ -215,9 +215,10 @@
                 <select id="engineSelect">
                     <option value="piper">Piper TTS ⭐ - Local neural TTS with phoneme support</option>
                     <option value="edge">Microsoft Edge TTS ⭐ - High quality cloud voices</option>
-                    <option value="wavenet">Google WaveNet TTS - $4/1M chars, excellent quality</option>
+                    <option value="pocket">Pocket TTS - Local neural TTS with voice cloning</option>
                     <option value="espeak">eSpeak NG - Lightweight offline TTS</option>
                     <option value="openai">OpenAI TTS 💎 - Premium neural voices (requires API key)</option>
+                    <option value="vastai">Vast.ai Bark TTS 🚀 - GPU serverless expressive (~$0.04/hr)</option>
                     <option value="web">Web Speech API - Browser built-in TTS</option>
                 </select>
                 <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);" id="engineDescription">
@@ -420,9 +421,10 @@
             const descriptions = {
                 'piper': 'Local neural TTS with phoneme customization support. Runs on your server.',
                 'edge': 'Cloud-based neural TTS with high-quality voices from Microsoft. Free to use.',
-                'wavenet': 'Google WaveNet neural TTS. Excellent quality at $4/1M chars. Supports SSML phonemes.',
+                'pocket': 'Local neural TTS with zero-shot voice cloning. ONNX-based, runs on CPU.',
                 'espeak': 'Lightweight offline TTS engine. Robotic but functional, supports phonemes.',
                 'openai': 'Premium neural TTS from OpenAI with natural-sounding voices. Requires API key.',
+                'vastai': 'GPU serverless Bark TTS with expressive voices. ~$0.04/hr when active, $0 when idle.',
                 'web': 'Browser built-in TTS. Quality varies by platform and available system voices.'
             };
             
@@ -440,8 +442,8 @@
             }
             
             // Show/hide phoneme warning for engines that don't support phonemes
-            // Piper, eSpeak, and WaveNet support phonemes (Piper/eSpeak custom, WaveNet via SSML)
-            const supportsPhonemes = engine === 'piper' || engine === 'espeak' || engine === 'wavenet';
+            // Piper and eSpeak support phonemes (custom phoneme dictionaries)
+            const supportsPhonemes = engine === 'piper' || engine === 'espeak';
             if (!supportsPhonemes) {
                 piperWarning.style.display = 'block';
                 piperWarning.textContent = '⚠️ ' + descriptions[engine].split('.')[0] + ' does not support custom pronunciations. Dictionary features will be disabled.';
@@ -464,13 +466,15 @@
                 piperWarning.textContent = '💎 OpenAI TTS requires an API key. Configure it in your server environment.';
             }
             
-            // Show API key requirement for WaveNet
-            if (engine === 'wavenet') {
+            // Show info for Vast.ai
+            if (engine === 'vastai') {
                 piperWarning.style.display = 'block';
-                piperWarning.style.background = '#e3f2fd';
-                piperWarning.style.color = '#1565c0';
-                piperWarning.textContent = '🔑 Google WaveNet TTS requires GOOGLE_TTS_API_KEY environment variable on the server.';
+                piperWarning.style.background = '#e8f5e9';
+                piperWarning.style.color = '#2e7d32';
+                piperWarning.textContent = '🚀 Vast.ai Bark TTS uses GPU serverless. First request may take 1-2 min (cold start). Cost: ~$0.04/hr when active.';
             }
+            
+
         }
         
         async function loadEdgeVoices() {
