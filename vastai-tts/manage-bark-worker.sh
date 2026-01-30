@@ -8,7 +8,7 @@
 set -e
 
 # Configuration
-GHCR_IMAGE="ghcr.io/theonebest agent/libread-bark-tts:latest"
+GHCR_IMAGE="ghcr.io/theonebestagent/libread-bark-tts:latest"
 ENDPOINT_NAME="xmjxwvgv"
 ENDPOINT_ID="11400"
 WORKERGROUP_ID="15956"
