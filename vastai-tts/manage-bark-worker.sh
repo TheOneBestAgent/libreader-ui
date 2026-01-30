@@ -9,9 +9,9 @@ set -e
 
 # Configuration
 GHCR_IMAGE="ghcr.io/theonebestagent/libread-bark-tts:latest"
-ENDPOINT_NAME="xmjxwvgv"
-ENDPOINT_ID="11400"
-WORKERGROUP_ID="15956"
+ENDPOINT_NAME="bark-tts"
+ENDPOINT_ID="11521"
+WORKERGROUP_ID="16104"
 
 # GPU search parameters - adjust as needed
 GPU_SEARCH='reliability>0.95 num_gpus=1 gpu_ram>=10 disk_space>=50'
